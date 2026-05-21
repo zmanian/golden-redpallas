@@ -1,12 +1,10 @@
 //! Common proof-system types.
 
-use blake2b_simd::Params;
 use golden_core::{ParticipantId, PublicPolynomial};
 use golden_pallas::{
     HelperPublicKey, PallasPoint, PallasScalar, SharedSecret, VestaPoint, VestaScalar,
+    dkg_mask_transcript,
 };
-
-const MASK_TRANSCRIPT_DOMAIN: &[u8] = b"GoldenRedPallas/DKGMaskTranscript/v0";
 
 /// Public inputs for one Golden mask proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,19 +33,14 @@ impl ProofPublicInputs {
     /// Return the transcript bytes used for mask derivation.
     #[must_use]
     pub fn mask_transcript(&self) -> Vec<u8> {
-        let mut digest = Params::new().hash_length(32).to_state();
-        digest.update(MASK_TRANSCRIPT_DOMAIN);
-        digest.update(&(self.session_id.len() as u64).to_le_bytes());
-        digest.update(&self.session_id);
-        digest.update(&self.dealer_id.get().to_le_bytes());
-        digest.update(&self.participant_id.get().to_le_bytes());
-        digest.update(&self.dealer_public.point().to_bytes());
-        digest.update(&self.participant_public.point().to_bytes());
-        digest.update(&(self.public_polynomial.coefficient_commitments.len() as u64).to_le_bytes());
-        for commitment in &self.public_polynomial.coefficient_commitments {
-            digest.update(&commitment.to_bytes());
-        }
-        digest.finalize().as_bytes().to_vec()
+        dkg_mask_transcript(
+            &self.session_id,
+            self.dealer_id,
+            self.participant_id,
+            self.dealer_public,
+            self.participant_public,
+            &self.public_polynomial,
+        )
     }
 }
 

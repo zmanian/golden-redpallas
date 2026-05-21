@@ -5,9 +5,10 @@
 //! performed correctly is intentionally not implemented here.
 
 use blake2b_simd::Params;
+use golden_core::{ParticipantId, PublicPolynomial};
 use pasta_curves::{arithmetic::CurveExt, vesta};
 
-use crate::{PallasScalar, VestaPoint, VestaScalar, domains};
+use crate::{PallasPoint, PallasScalar, VestaPoint, VestaScalar, domains};
 
 /// Dealer or participant helper-curve secret key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,13 +105,39 @@ pub fn derive_mask(shared: SharedSecret, transcript: &[u8]) -> PallasScalar {
     PallasScalar::from_uniform_bytes(&uniform)
 }
 
+/// Return the canonical DKG mask transcript binding.
+#[must_use]
+pub fn dkg_mask_transcript(
+    session_id: &[u8],
+    dealer_id: ParticipantId,
+    participant_id: ParticipantId,
+    dealer_public: HelperPublicKey,
+    participant_public: HelperPublicKey,
+    public_polynomial: &PublicPolynomial<PallasPoint>,
+) -> Vec<u8> {
+    let mut digest = Params::new().hash_length(32).to_state();
+    digest.update(domains::DKG_MASK_TRANSCRIPT);
+    digest.update(&(session_id.len() as u64).to_le_bytes());
+    digest.update(session_id);
+    digest.update(&dealer_id.get().to_le_bytes());
+    digest.update(&participant_id.get().to_le_bytes());
+    digest.update(&dealer_public.point().to_bytes());
+    digest.update(&participant_public.point().to_bytes());
+    digest.update(&(public_polynomial.coefficient_commitments.len() as u64).to_le_bytes());
+    for commitment in &public_polynomial.coefficient_commitments {
+        digest.update(&commitment.to_bytes());
+    }
+    digest.finalize().as_bytes().to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        HelperPublicKey, HelperSecretKey, SharedSecret, derive_mask, hash_to_vesta_h1,
-        hash_to_vesta_h2,
+        HelperPublicKey, HelperSecretKey, SharedSecret, derive_mask, dkg_mask_transcript,
+        hash_to_vesta_h1, hash_to_vesta_h2,
     };
-    use crate::{PallasScalar, VestaPoint, VestaScalar};
+    use crate::{PallasPoint, PallasScalar, VestaPoint, VestaScalar};
+    use golden_core::{FieldElement, ParticipantId, PublicPolynomial};
 
     const EVRF_VECTOR_V0: &str = include_str!("../../../test-vectors/golden-pallas/evrf-v0.txt");
 
@@ -152,6 +179,39 @@ mod tests {
     #[test]
     fn h1_and_h2_are_domain_separated() {
         assert_ne!(hash_to_vesta_h1(b"msg"), hash_to_vesta_h2(b"msg"));
+    }
+
+    #[test]
+    fn dkg_mask_transcript_binds_public_inputs() {
+        let dealer = HelperSecretKey::from_scalar(VestaScalar::from_u64(13));
+        let participant = HelperSecretKey::from_scalar(VestaScalar::from_u64(29));
+        let dealer_id = ParticipantId::new(10).expect("non-zero id");
+        let participant_id = ParticipantId::new(1).expect("non-zero id");
+        let public_polynomial = PublicPolynomial {
+            coefficient_commitments: vec![
+                PallasPoint::generator_mul(PallasScalar::from_u64(5)),
+                PallasPoint::generator_mul(PallasScalar::from_u64(7)),
+            ],
+        };
+
+        assert_ne!(
+            dkg_mask_transcript(
+                b"session-a",
+                dealer_id,
+                participant_id,
+                dealer.public_key(),
+                participant.public_key(),
+                &public_polynomial,
+            ),
+            dkg_mask_transcript(
+                b"session-b",
+                dealer_id,
+                participant_id,
+                dealer.public_key(),
+                participant.public_key(),
+                &public_polynomial,
+            )
+        );
     }
 
     #[test]

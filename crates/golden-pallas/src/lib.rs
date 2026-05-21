@@ -11,7 +11,8 @@ mod simulation;
 mod vesta_types;
 
 pub use evrf::{
-    HelperPublicKey, HelperSecretKey, SharedSecret, derive_mask, hash_to_vesta_h1, hash_to_vesta_h2,
+    HelperPublicKey, HelperSecretKey, SharedSecret, derive_mask, dkg_mask_transcript,
+    hash_to_vesta_h1, hash_to_vesta_h2,
 };
 pub use pallas_types::{
     PallasPoint, PallasScalar, commit_polynomial, evaluate_public_polynomial,
@@ -32,6 +33,9 @@ pub mod domains {
 
     /// Hash-to-Pallas-scalar domain for masks.
     pub const MASK_TO_FIELD: &[u8] = b"GoldenRedPallas/MaskToField/v0";
+
+    /// Transcript domain for binding DKG mask inputs.
+    pub const DKG_MASK_TRANSCRIPT: &[u8] = b"GoldenRedPallas/DKGMaskTranscript/v0";
 }
 
 /// Unimplemented Pallas/Vesta eVRF marker.

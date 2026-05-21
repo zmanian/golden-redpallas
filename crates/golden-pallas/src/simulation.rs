@@ -4,7 +4,6 @@
 //! externally accepted. It exercises the rest of the Golden data flow with real
 //! Pallas commitments and Vesta-derived masks.
 
-use blake2b_simd::Params;
 use golden_core::{
     AggregatedShare, AggregationError, ConfigError, DealerConfig, DealerError, DealerSecret,
     FieldElement, ParticipantId, Polynomial, ProofStatus, ProtocolConfig, Transcript,
@@ -13,10 +12,8 @@ use golden_core::{
 
 use crate::{
     HelperPublicKey, HelperSecretKey, PallasPoint, PallasScalar, VestaScalar, commit_polynomial,
-    derive_mask, verify_masked_share_commitment,
+    derive_mask, dkg_mask_transcript, verify_masked_share_commitment,
 };
-
-const MASK_TRANSCRIPT_DOMAIN: &[u8] = b"GoldenRedPallas/DKGMaskTranscript/v0";
 
 /// Participant fixture input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -400,7 +397,7 @@ fn dealer_mask(
         .diffie_hellman(participant.helper_public());
     derive_mask(
         shared,
-        &mask_transcript(
+        &dkg_mask_transcript(
             session_id,
             dealer.id,
             participant.id,
@@ -421,7 +418,7 @@ fn participant_mask(
     let shared = participant.helper_secret.diffie_hellman(dealer_public);
     derive_mask(
         shared,
-        &mask_transcript(
+        &dkg_mask_transcript(
             session_id,
             dealer_id,
             participant.id,
@@ -430,29 +427,6 @@ fn participant_mask(
             public_polynomial,
         ),
     )
-}
-
-fn mask_transcript(
-    session_id: &[u8],
-    dealer_id: ParticipantId,
-    participant_id: ParticipantId,
-    dealer_public: HelperPublicKey,
-    participant_public: HelperPublicKey,
-    public_polynomial: &golden_core::PublicPolynomial<PallasPoint>,
-) -> Vec<u8> {
-    let mut digest = Params::new().hash_length(32).to_state();
-    digest.update(MASK_TRANSCRIPT_DOMAIN);
-    digest.update(&(session_id.len() as u64).to_le_bytes());
-    digest.update(session_id);
-    digest.update(&dealer_id.get().to_le_bytes());
-    digest.update(&participant_id.get().to_le_bytes());
-    digest.update(&dealer_public.point().to_bytes());
-    digest.update(&participant_public.point().to_bytes());
-    digest.update(&(public_polynomial.coefficient_commitments.len() as u64).to_le_bytes());
-    for commitment in &public_polynomial.coefficient_commitments {
-        digest.update(&commitment.to_bytes());
-    }
-    digest.finalize().as_bytes().to_vec()
 }
 
 fn parse_participants(input: &str) -> Result<Vec<SimulationParticipant>, SimulationError> {
