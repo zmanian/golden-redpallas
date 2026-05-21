@@ -45,6 +45,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 ## Milestone 3: Golden Proofs
 
 - [x] Add proof-facing API and fixture backend.
+- [x] Wire fixture proof verification into DKG recovery.
 - [x] Document Bulletproofs backend decision constraints.
 - [ ] Decide between existing Bulletproofs R1CS library and custom implementation.
 - [ ] Implement Pallas-field constraints for eVRF mask computation.

@@ -63,7 +63,7 @@ fn validate_witness(
         return Err(ProofError::InvalidWitness);
     }
 
-    let mask = derive_mask(public_inputs.shared_point, &mask_transcript(public_inputs));
+    let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
     if public_inputs.mask != mask || witness.mask != mask {
         return Err(ProofError::InvalidWitness);
     }
@@ -80,34 +80,12 @@ fn digest_public_inputs(public_inputs: &ProofPublicInputs) -> Vec<u8> {
         .hash_length(32)
         .to_state()
         .update(DIGEST_DOMAIN)
-        .update(&mask_transcript(public_inputs))
+        .update(&public_inputs.mask_transcript())
         .update(&public_inputs.shared_point.point().to_bytes())
         .update(&public_inputs.mask.to_bytes())
         .update(&public_inputs.mask_commitment.to_bytes())
         .finalize();
     hash.as_bytes().to_vec()
-}
-
-fn mask_transcript(public_inputs: &ProofPublicInputs) -> Vec<u8> {
-    let mut digest = Params::new().hash_length(32).to_state();
-    digest.update(b"GoldenRedPallas/DKGMaskTranscript/v0");
-    digest.update(&(public_inputs.session_id.len() as u64).to_le_bytes());
-    digest.update(&public_inputs.session_id);
-    digest.update(&public_inputs.dealer_id.get().to_le_bytes());
-    digest.update(&public_inputs.participant_id.get().to_le_bytes());
-    digest.update(&public_inputs.dealer_public.point().to_bytes());
-    digest.update(&public_inputs.participant_public.point().to_bytes());
-    digest.update(
-        &(public_inputs
-            .public_polynomial
-            .coefficient_commitments
-            .len() as u64)
-            .to_le_bytes(),
-    );
-    for commitment in &public_inputs.public_polynomial.coefficient_commitments {
-        digest.update(&commitment.to_bytes());
-    }
-    digest.finalize().as_bytes().to_vec()
 }
 
 #[cfg(test)]
@@ -118,7 +96,7 @@ mod tests {
         commit_polynomial, derive_mask,
     };
 
-    use super::{FixtureProofSystem, mask_transcript};
+    use super::FixtureProofSystem;
     use crate::{ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
     fn id(value: u64) -> ParticipantId {
@@ -143,7 +121,7 @@ mod tests {
             mask_commitment: PallasPoint::identity(),
             public_polynomial,
         };
-        let mask = derive_mask(public_inputs.shared_point, &mask_transcript(&public_inputs));
+        let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
         public_inputs.mask = mask;
         public_inputs.mask_commitment = PallasPoint::generator_mul(mask);
         let witness = ProofWitness {
