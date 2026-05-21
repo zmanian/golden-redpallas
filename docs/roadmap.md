@@ -1,5 +1,8 @@
 # Roadmap
 
+See [`implementation-testing-plan.md`](implementation-testing-plan.md) for the
+full staged implementation plan, test matrix, CI plan, and release gates.
+
 ## Milestone 0: Repository Baseline
 
 - [x] Rust workspace.
