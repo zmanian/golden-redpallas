@@ -82,6 +82,15 @@ pub enum ProofError {
     BackendMismatch,
 }
 
+/// One proof verification item in a batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProofBatchItem<'a> {
+    /// Public proof inputs.
+    pub public_inputs: &'a ProofPublicInputs,
+    /// Proof bytes.
+    pub proof: &'a MaskProof,
+}
+
 /// Proof-system interface for one Golden mask proof.
 pub trait ProofSystem {
     /// Create a proof for the provided public inputs and witness.
@@ -92,4 +101,16 @@ pub trait ProofSystem {
 
     /// Verify a proof against public inputs.
     fn verify(public_inputs: &ProofPublicInputs, proof: &MaskProof) -> Result<(), ProofError>;
+
+    /// Verify multiple proofs together.
+    ///
+    /// Backends that support true batch verification should override this
+    /// method. The default preserves the same contract by verifying each item
+    /// independently.
+    fn verify_batch(items: &[ProofBatchItem<'_>]) -> Result<(), ProofError> {
+        for item in items {
+            Self::verify(item.public_inputs, item.proof)?;
+        }
+        Ok(())
+    }
 }

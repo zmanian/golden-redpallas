@@ -10,4 +10,6 @@ mod types;
 
 pub use dkg::{ProofedDkgSimulation, ProofedTranscript, recover_with_proofs};
 pub use fixture::FixtureProofSystem;
-pub use types::{MaskProof, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
+pub use types::{
+    MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
+};

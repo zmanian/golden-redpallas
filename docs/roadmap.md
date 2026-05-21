@@ -46,6 +46,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 
 - [x] Add proof-facing API and fixture backend.
 - [x] Wire fixture proof verification into DKG recovery.
+- [x] Add proof batch-verification API and fixture DKG batch path.
 - [x] Document Bulletproofs backend decision constraints.
 - [ ] Decide between existing Bulletproofs R1CS library and custom implementation.
 - [ ] Implement Pallas-field constraints for eVRF mask computation.

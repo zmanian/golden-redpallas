@@ -11,7 +11,7 @@ use golden_pallas::{
     SimulationError, SimulationParticipant, derive_mask, verify_masked_share_commitment,
 };
 
-use crate::{MaskProof, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
+use crate::{MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
 /// Dealer transcript plus one mask proof per participant.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,45 +176,53 @@ fn verify_proofed_transcripts<P: ProofSystem>(
     participant_id: ParticipantId,
     proofed_transcripts: &[ProofedTranscript],
 ) -> Result<Vec<golden_core::VerifiedTranscript<PallasScalar, PallasPoint>>, ProofedDkgError> {
-    proofed_transcripts
-        .iter()
-        .map(|proofed| {
-            let transcript = &proofed.transcript;
-            let dealer = find_dealer(simulation, transcript.dealer)?;
-            let participant = find_participant(simulation, participant_id)?;
-            let masked_share = transcript
-                .masked_shares
-                .iter()
-                .find(|share| share.participant == participant_id)
-                .ok_or(AggregationError::MissingShare)?;
-            let proof_entry = proofed
-                .proofs
-                .iter()
-                .find(|entry| entry.participant == participant_id)
-                .ok_or(ProofedDkgError::MissingProof)?;
-            let expected_inputs = proof_public_inputs(
-                simulation,
-                transcript,
-                dealer,
-                participant,
-                masked_share.mask_commitment,
-            );
+    let mut batch = Vec::with_capacity(proofed_transcripts.len());
+    let mut transcripts = Vec::with_capacity(proofed_transcripts.len());
 
-            if proof_entry.public_inputs != expected_inputs {
-                return Err(ProofedDkgError::PublicInputsMismatch {
-                    dealer: transcript.dealer,
-                    participant: participant_id,
-                });
-            }
+    for proofed in proofed_transcripts {
+        let transcript = &proofed.transcript;
+        let dealer = find_dealer(simulation, transcript.dealer)?;
+        let participant = find_participant(simulation, participant_id)?;
+        let masked_share = transcript
+            .masked_shares
+            .iter()
+            .find(|share| share.participant == participant_id)
+            .ok_or(AggregationError::MissingShare)?;
+        let proof_entry = proofed
+            .proofs
+            .iter()
+            .find(|entry| entry.participant == participant_id)
+            .ok_or(ProofedDkgError::MissingProof)?;
+        let expected_inputs = proof_public_inputs(
+            simulation,
+            transcript,
+            dealer,
+            participant,
+            masked_share.mask_commitment,
+        );
 
-            P::verify(&proof_entry.public_inputs, &proof_entry.proof).map_err(|source| {
-                ProofedDkgError::Proof {
-                    dealer: transcript.dealer,
-                    participant: participant_id,
-                    source,
-                }
-            })?;
+        if proof_entry.public_inputs != expected_inputs {
+            return Err(ProofedDkgError::PublicInputsMismatch {
+                dealer: transcript.dealer,
+                participant: participant_id,
+            });
+        }
 
+        batch.push(ProofBatchItem {
+            public_inputs: &proof_entry.public_inputs,
+            proof: &proof_entry.proof,
+        });
+        transcripts.push(transcript);
+    }
+
+    P::verify_batch(&batch).map_err(|source| ProofedDkgError::BatchProof {
+        participant: participant_id,
+        source,
+    })?;
+
+    transcripts
+        .into_iter()
+        .map(|transcript| {
             let mut verified_candidate = transcript.clone();
             verified_candidate.proof_status = ProofStatus::Verified;
             verify_transcript(
@@ -312,6 +320,13 @@ pub enum ProofedDkgError {
         /// Backend proof failure.
         source: ProofError,
     },
+    /// Batch proof verification failed.
+    BatchProof {
+        /// Participant whose proof batch failed.
+        participant: ParticipantId,
+        /// Backend proof failure.
+        source: ProofError,
+    },
     /// Transcript verification failed.
     Transcript {
         /// Dealer whose transcript failed.
@@ -390,7 +405,7 @@ mod tests {
                 participant,
                 &proofed_transcripts,
             ),
-            Err(ProofedDkgError::Proof {
+            Err(ProofedDkgError::BatchProof {
                 source: ProofError::InvalidProof,
                 ..
             })

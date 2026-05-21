@@ -3,7 +3,7 @@
 use blake2b_simd::Params;
 use golden_pallas::{PallasPoint, derive_mask};
 
-use crate::{MaskProof, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
+use crate::{MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
 const BACKEND: &str = "golden-fixture-proof/v0";
 const DIGEST_DOMAIN: &[u8] = b"GoldenRedPallas/FixtureProof/v0";
@@ -38,6 +38,13 @@ impl ProofSystem for FixtureProofSystem {
         } else {
             Err(ProofError::InvalidProof)
         }
+    }
+
+    fn verify_batch(items: &[ProofBatchItem<'_>]) -> Result<(), ProofError> {
+        for item in items {
+            Self::verify(item.public_inputs, item.proof)?;
+        }
+        Ok(())
     }
 }
 
@@ -97,7 +104,7 @@ mod tests {
     };
 
     use super::FixtureProofSystem;
-    use crate::{ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
+    use crate::{ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
     fn id(value: u64) -> ParticipantId {
         ParticipantId::new(value).expect("non-zero id")
@@ -130,6 +137,12 @@ mod tests {
             mask,
         };
         (public_inputs, witness)
+    }
+
+    fn refresh_mask(public_inputs: &mut ProofPublicInputs) {
+        let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
+        public_inputs.mask = mask;
+        public_inputs.mask_commitment = PallasPoint::generator_mul(mask);
     }
 
     #[test]
@@ -233,6 +246,55 @@ mod tests {
 
         assert_eq!(
             FixtureProofSystem::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn batch_verifies_valid_inputs() {
+        let (first_inputs, first_witness) = valid_case();
+        let first_proof = FixtureProofSystem::prove(&first_inputs, &first_witness).expect("proof");
+        let (mut second_inputs, mut second_witness) = valid_case();
+        second_inputs.participant_id = id(2);
+        refresh_mask(&mut second_inputs);
+        second_witness.mask = second_inputs.mask;
+        let second_proof =
+            FixtureProofSystem::prove(&second_inputs, &second_witness).expect("proof");
+        let batch = [
+            ProofBatchItem {
+                public_inputs: &first_inputs,
+                proof: &first_proof,
+            },
+            ProofBatchItem {
+                public_inputs: &second_inputs,
+                proof: &second_proof,
+            },
+        ];
+
+        assert_eq!(FixtureProofSystem::verify_batch(&batch), Ok(()));
+    }
+
+    #[test]
+    fn batch_rejects_invalid_member() {
+        let (first_inputs, first_witness) = valid_case();
+        let first_proof = FixtureProofSystem::prove(&first_inputs, &first_witness).expect("proof");
+        let (second_inputs, second_witness) = valid_case();
+        let mut second_proof =
+            FixtureProofSystem::prove(&second_inputs, &second_witness).expect("proof");
+        second_proof.bytes[0] ^= 1;
+        let batch = [
+            ProofBatchItem {
+                public_inputs: &first_inputs,
+                proof: &first_proof,
+            },
+            ProofBatchItem {
+                public_inputs: &second_inputs,
+                proof: &second_proof,
+            },
+        ];
+
+        assert_eq!(
+            FixtureProofSystem::verify_batch(&batch),
             Err(ProofError::InvalidProof)
         );
     }
