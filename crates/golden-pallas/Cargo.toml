@@ -1,0 +1,15 @@
+[package]
+name = "golden-pallas"
+version = "0.1.0"
+description = "Pallas/Vesta bindings for Golden DKG"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+golden-core = { path = "../golden-core" }
+
+[lints]
+workspace = true

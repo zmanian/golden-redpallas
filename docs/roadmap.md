@@ -1,0 +1,56 @@
+# Roadmap
+
+## Milestone 0: Repository Baseline
+
+- [x] Rust workspace.
+- [x] Core field abstraction.
+- [x] Shamir evaluation and interpolation tests.
+- [x] Dealer transcript data model.
+- [x] Placeholder crates for Pallas and FROST integration.
+
+## Milestone 1: Pallas Core Types
+
+- [ ] Add `pasta_curves` dependency.
+- [ ] Bind `golden_core::FieldElement` to `pasta_curves::pallas::Scalar`.
+- [ ] Add serialization for Pallas scalars and points.
+- [ ] Add Pallas public polynomial commitments.
+- [ ] Define participant identifiers compatible with FROST identifiers.
+
+## Milestone 2: Vesta eVRF
+
+- [ ] Select hash-to-Vesta construction and domain separators.
+- [ ] Implement dealer and participant helper-curve keys.
+- [ ] Implement DH-derived mask generation.
+- [ ] Add test vectors for deterministic transcripts.
+- [ ] Document all domain separators.
+
+## Milestone 3: Golden Proofs
+
+- [ ] Decide between existing Bulletproofs R1CS library and custom implementation.
+- [ ] Implement Pallas-field constraints for eVRF mask computation.
+- [ ] Implement batch verification.
+- [ ] Add malformed-transcript negative tests.
+- [ ] Benchmark prover and verifier cost for `n = 8`, `n = 16`, and `n = 32`.
+
+## Milestone 4: FROST RedPallas
+
+- [ ] Implement or upstream Pallas ciphersuite support.
+- [ ] Map Golden shares to FROST signing shares.
+- [ ] Enforce RedPallas even-y key normalization.
+- [ ] Implement ZIP-312 re-randomization support.
+- [ ] Verify signatures against Zcash RedPallas test vectors.
+
+## Milestone 5: Infrastructure
+
+- [ ] Define Golden DKG session transcript format.
+- [ ] Add CLI commands for creating, posting, verifying, and recovering shares.
+- [ ] Prototype frostd session support.
+- [ ] Add wallet backup JSON format.
+
+## Milestone 6: Audit Readiness
+
+- [ ] Threat model.
+- [ ] Constant-time review.
+- [ ] Dependency review.
+- [ ] Fuzzing for transcript parsing.
+- [ ] Independent cryptographic audit.

@@ -1,0 +1,12 @@
+[package]
+name = "golden-core"
+version = "0.1.0"
+description = "Protocol-independent Golden DKG core"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
