@@ -9,6 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+blake2b_simd = "1.0.4"
 golden-core = { path = "../golden-core" }
 pasta_curves = "0.5.1"
 

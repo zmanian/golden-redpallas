@@ -25,12 +25,12 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 
 ## Milestone 2: Vesta eVRF
 
-- [ ] Select hash-to-Vesta construction and domain separators.
+- [x] Select hash-to-Vesta construction and domain separators.
 - [x] Add Vesta helper-curve point and scalar wrappers.
-- [ ] Implement dealer and participant helper-curve keys.
-- [ ] Implement DH-derived mask generation.
+- [x] Implement dealer and participant helper-curve keys.
+- [x] Implement DH-derived mask generation.
 - [ ] Add test vectors for deterministic transcripts.
-- [ ] Document all domain separators.
+- [x] Document all domain separators.
 
 ## Milestone 3: Golden Proofs
 

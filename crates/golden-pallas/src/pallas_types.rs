@@ -6,7 +6,7 @@ use golden_core::{FieldElement, MaskedShare, ParticipantId, Polynomial, PublicPo
 use pasta_curves::{
     group::{
         Curve, Group, GroupEncoding,
-        ff::{Field, PrimeField},
+        ff::{Field, FromUniformBytes, PrimeField},
         prime::PrimeCurveAffine,
     },
     pallas,
@@ -39,6 +39,12 @@ impl PallasScalar {
     #[must_use]
     pub fn from_bytes(bytes: [u8; 32]) -> Option<Self> {
         Option::<pallas::Scalar>::from(pallas::Scalar::from_repr(bytes)).map(Self)
+    }
+
+    /// Reduce 64 uniform bytes into a Pallas scalar.
+    #[must_use]
+    pub fn from_uniform_bytes(bytes: &[u8; 64]) -> Self {
+        Self(pallas::Scalar::from_uniform_bytes(bytes))
     }
 }
 

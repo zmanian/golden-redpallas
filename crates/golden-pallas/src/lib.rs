@@ -5,9 +5,13 @@
 //! separate workstreams; this crate currently provides concrete scalar, group,
 //! and commitment-equation operations.
 
+mod evrf;
 mod pallas_types;
 mod vesta_types;
 
+pub use evrf::{
+    HelperPublicKey, HelperSecretKey, SharedSecret, derive_mask, hash_to_vesta_h1, hash_to_vesta_h2,
+};
 pub use pallas_types::{
     PallasPoint, PallasScalar, commit_polynomial, evaluate_public_polynomial,
     verify_masked_share_commitment,
@@ -17,10 +21,10 @@ pub use vesta_types::{VestaPoint, VestaScalar};
 /// Domain separators reserved for the Pallas/Vesta Golden instantiation.
 pub mod domains {
     /// Hash-to-Vesta domain for the first eVRF map.
-    pub const H1_TO_VESTA: &[u8] = b"GoldenRedPallas/Vesta/H1/v0";
+    pub const H1_TO_VESTA: &str = "GoldenRedPallas/Vesta/H1/v0";
 
     /// Hash-to-Vesta domain for the second eVRF map.
-    pub const H2_TO_VESTA: &[u8] = b"GoldenRedPallas/Vesta/H2/v0";
+    pub const H2_TO_VESTA: &str = "GoldenRedPallas/Vesta/H2/v0";
 
     /// Hash-to-Pallas-scalar domain for masks.
     pub const MASK_TO_FIELD: &[u8] = b"GoldenRedPallas/MaskToField/v0";

@@ -83,6 +83,7 @@ version = "0.1.0"
 name = "golden-pallas"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
  "golden-core",
  "pasta_curves",
 ]
