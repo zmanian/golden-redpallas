@@ -89,6 +89,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "golden-proofs"
+version = "0.1.0"
+dependencies = [
+ "blake2b_simd",
+ "golden-core",
+ "golden-pallas",
+]
+
+[[package]]
 name = "group"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

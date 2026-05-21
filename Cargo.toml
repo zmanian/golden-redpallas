@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/golden-core",
     "crates/golden-pallas",
+    "crates/golden-proofs",
     "crates/frost-redpallas",
     "crates/golden-cli",
 ]
