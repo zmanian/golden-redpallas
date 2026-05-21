@@ -7,6 +7,7 @@
 
 mod evrf;
 mod pallas_types;
+mod simulation;
 mod vesta_types;
 
 pub use evrf::{
@@ -15,6 +16,9 @@ pub use evrf::{
 pub use pallas_types::{
     PallasPoint, PallasScalar, commit_polynomial, evaluate_public_polynomial,
     verify_masked_share_commitment,
+};
+pub use simulation::{
+    DkgFixture, DkgSimulation, SimulationDealer, SimulationError, SimulationParticipant,
 };
 pub use vesta_types::{VestaPoint, VestaScalar};
 

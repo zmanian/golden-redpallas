@@ -32,6 +32,16 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Add test vectors for deterministic transcripts.
 - [x] Document all domain separators.
 
+## Milestone 2.5: Golden DKG Simulation
+
+- [x] Add deterministic `t = 2, n = 3` DKG fixture.
+- [x] Generate dealer transcripts with Pallas commitments and Vesta-derived masks.
+- [x] Recover aggregate participant shares from public transcripts.
+- [x] Verify aggregate public key against reconstructed aggregate secret.
+- [x] Reject corrupted mask commitments.
+- [x] Reject fewer than threshold valid dealer transcripts.
+- [x] Verify transcript ordering does not change recovered shares.
+
 ## Milestone 3: Golden Proofs
 
 - [ ] Decide between existing Bulletproofs R1CS library and custom implementation.

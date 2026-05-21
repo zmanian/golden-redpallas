@@ -1,0 +1,15 @@
+# Golden RedPallas deterministic DKG simulation fixture.
+#
+# Format:
+# - participants=id:helper_secret;...
+# - dealers=id/helper_secret:constant,linear;...
+#
+# The fixture is intentionally small: threshold 2 with 3 participants and 3
+# dealers. Proofs are modeled as externally verified; this vector covers the
+# Pallas commitments, Vesta-derived masks, share recovery, aggregation, and
+# reconstruction path.
+version=0
+threshold=2
+session=golden-redpallas-dkg-simulation-v0
+participants=1:29;2:31;3:37
+dealers=10/13:5,7;11/17:11,19;12/23:29,31
