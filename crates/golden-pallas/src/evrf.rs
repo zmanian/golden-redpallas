@@ -106,8 +106,13 @@ pub fn derive_mask(shared: SharedSecret, transcript: &[u8]) -> PallasScalar {
 
 #[cfg(test)]
 mod tests {
-    use super::{HelperSecretKey, derive_mask, hash_to_vesta_h1, hash_to_vesta_h2};
-    use crate::VestaScalar;
+    use super::{
+        HelperPublicKey, HelperSecretKey, SharedSecret, derive_mask, hash_to_vesta_h1,
+        hash_to_vesta_h2,
+    };
+    use crate::{PallasScalar, VestaPoint, VestaScalar};
+
+    const EVRF_VECTOR_V0: &str = include_str!("../../../test-vectors/golden-pallas/evrf-v0.txt");
 
     #[test]
     fn dealer_and_participant_derive_same_shared_secret() {
@@ -147,5 +152,81 @@ mod tests {
     #[test]
     fn h1_and_h2_are_domain_separated() {
         assert_ne!(hash_to_vesta_h1(b"msg"), hash_to_vesta_h2(b"msg"));
+    }
+
+    #[test]
+    fn matches_checked_in_evrf_vector() {
+        assert_eq!(vector_value("version"), "0");
+
+        let dealer_secret = HelperSecretKey::from_scalar(
+            VestaScalar::from_bytes(hex_array(vector_value("dealer_secret")))
+                .expect("canonical dealer secret"),
+        );
+        let participant_secret = HelperSecretKey::from_scalar(
+            VestaScalar::from_bytes(hex_array(vector_value("participant_secret")))
+                .expect("canonical participant secret"),
+        );
+        let dealer_public = HelperPublicKey::from_point(
+            VestaPoint::from_bytes(hex_array(vector_value("dealer_public")))
+                .expect("canonical dealer public key"),
+        );
+        let participant_public = HelperPublicKey::from_point(
+            VestaPoint::from_bytes(hex_array(vector_value("participant_public")))
+                .expect("canonical participant public key"),
+        );
+        let shared = SharedSecret::from_point(
+            VestaPoint::from_bytes(hex_array(vector_value("shared_point")))
+                .expect("canonical shared point"),
+        );
+        let mask = PallasScalar::from_bytes(hex_array(vector_value("mask")))
+            .expect("canonical mask scalar");
+        let h1 = VestaPoint::from_bytes(hex_array(vector_value("h1"))).expect("canonical H1 point");
+        let h2 = VestaPoint::from_bytes(hex_array(vector_value("h2"))).expect("canonical H2 point");
+
+        assert_eq!(dealer_secret.public_key(), dealer_public);
+        assert_eq!(participant_secret.public_key(), participant_public);
+        assert_eq!(dealer_secret.diffie_hellman(participant_public), shared);
+        assert_eq!(participant_secret.diffie_hellman(dealer_public), shared);
+        assert_eq!(
+            derive_mask(shared, vector_value("transcript").as_bytes()),
+            mask
+        );
+        assert_eq!(
+            hash_to_vesta_h1(vector_value("hash_message").as_bytes()),
+            h1
+        );
+        assert_eq!(
+            hash_to_vesta_h2(vector_value("hash_message").as_bytes()),
+            h2
+        );
+    }
+
+    fn vector_value(key: &str) -> &'static str {
+        EVRF_VECTOR_V0
+            .lines()
+            .filter(|line| !line.starts_with('#'))
+            .find_map(|line| {
+                let (candidate, value) = line.split_once('=')?;
+                (candidate == key).then_some(value)
+            })
+            .unwrap_or_else(|| panic!("missing vector key {key}"))
+    }
+
+    fn hex_array<const N: usize>(value: &str) -> [u8; N] {
+        assert_eq!(value.len(), N * 2, "unexpected hex length");
+        let mut out = [0_u8; N];
+        for (idx, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            out[idx] = (hex_nibble(pair[0]) << 4) | hex_nibble(pair[1]);
+        }
+        out
+    }
+
+    const fn hex_nibble(byte: u8) -> u8 {
+        match byte {
+            b'0'..=b'9' => byte - b'0',
+            b'a'..=b'f' => byte - b'a' + 10,
+            b'A'..=b'F' => byte - b'A' + 10,
+            _ => panic!("invalid hex character"),
+        }
     }
 }

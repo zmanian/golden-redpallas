@@ -1,0 +1,18 @@
+# Golden RedPallas Vesta eVRF deterministic test vector.
+#
+# This vector fixes the current helper-key agreement, hash-to-Vesta domains,
+# and mask-to-Pallas-scalar derivation contract. Regenerate with:
+#
+#     cargo run -p golden-pallas --example evrf_vector
+#
+version=0
+dealer_secret=0d00000000000000000000000000000000000000000000000000000000000000
+participant_secret=1d00000000000000000000000000000000000000000000000000000000000000
+dealer_public=9b8b53cf73dc3db2a1497a3c6c3a10dcf21da5b2304d09ad7c35898d7c5c7416
+participant_public=786687f69c9917a2e037a106c4a2223d1be8723b86af3bb3ee699920a1c12f29
+shared_point=95144cc893300b6a28cef6128d86da3035e384c7a6a57f65d8d2cb73257c3992
+transcript=golden-redpallas-evrf-test-vector-v0
+mask=451d6885d0d2fa02d37ad59b620424102dff65f09bbbfdb489a5631cf0f5ed1b
+hash_message=golden-redpallas-hash-to-vesta-vector-v0
+h1=8690c95450517ccec1dda39f13e6febacb11075fc5a854c618cb502640512b0b
+h2=52acb95584afd49d2cca27af4f5e3290dd975380c863005b546892f391238802

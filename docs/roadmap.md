@@ -29,7 +29,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Add Vesta helper-curve point and scalar wrappers.
 - [x] Implement dealer and participant helper-curve keys.
 - [x] Implement DH-derived mask generation.
-- [ ] Add test vectors for deterministic transcripts.
+- [x] Add test vectors for deterministic transcripts.
 - [x] Document all domain separators.
 
 ## Milestone 3: Golden Proofs

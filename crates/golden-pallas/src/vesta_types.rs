@@ -3,7 +3,11 @@
 use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use pasta_curves::{
-    group::{Curve, Group, GroupEncoding, ff::Field, prime::PrimeCurveAffine},
+    group::{
+        Curve, Group, GroupEncoding,
+        ff::{Field, PrimeField},
+        prime::PrimeCurveAffine,
+    },
     vesta,
 };
 
@@ -22,6 +26,18 @@ impl VestaScalar {
     #[must_use]
     pub const fn into_inner(self) -> vesta::Scalar {
         self.0
+    }
+
+    /// Return the canonical little-endian field encoding.
+    #[must_use]
+    pub fn to_bytes(self) -> [u8; 32] {
+        self.0.to_repr()
+    }
+
+    /// Parse a canonical little-endian field encoding.
+    #[must_use]
+    pub fn from_bytes(bytes: [u8; 32]) -> Option<Self> {
+        Option::<vesta::Scalar>::from(vesta::Scalar::from_repr(bytes)).map(Self)
     }
 
     /// Construct from a small integer.
@@ -135,5 +151,13 @@ mod tests {
         let encoded = point.to_bytes();
 
         assert_eq!(VestaPoint::from_bytes(encoded), Some(point));
+    }
+
+    #[test]
+    fn vesta_scalar_encoding_round_trips() {
+        let scalar = VestaScalar::from_u64(42);
+        let encoded = scalar.to_bytes();
+
+        assert_eq!(VestaScalar::from_bytes(encoded), Some(scalar));
     }
 }
