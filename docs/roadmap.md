@@ -53,6 +53,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Add feature-gated Pallas backend skeleton and transcript tests.
 - [x] Add executable Pallas mask-relation constraint layer.
 - [x] Replace opened mask commitment with a Schnorr-style opening proof.
+- [x] Add deterministic hash-to-field trace for mask derivation.
 - [ ] Implement Pallas-field constraints for eVRF mask computation.
 - [ ] Implement batch verification.
 - [ ] Add malformed-transcript negative tests.

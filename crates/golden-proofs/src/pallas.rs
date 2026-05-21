@@ -6,29 +6,34 @@
 //! will replace with a zero-knowledge proof over the Pallas scalar field.
 
 use blake2b_simd::{Params, State};
-use golden_pallas::{PallasPoint, PallasScalar, derive_mask};
+use golden_pallas::{PallasPoint, PallasScalar, domains};
 
 use crate::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
     witness::validate_witness,
 };
 
-const BACKEND: &str = "golden-pallas-proof-skeleton/v2";
+const BACKEND: &str = "golden-pallas-proof-skeleton/v3";
 const CHALLENGE_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofChallenge/v0";
 const CONSTRAINT_DOMAIN: &[u8] = b"GoldenRedPallas/PallasMaskConstraints/v0";
 const GENERATOR_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofGenerator/v0";
+const MASK_TRACE_DOMAIN: &[u8] = b"GoldenRedPallas/PallasMaskHashTrace/v0";
 const MASK_BLINDING_DOMAIN: &[u8] = b"GoldenRedPallas/PallasMaskBlinding/v0";
 const MASK_OPENING_NONCE_DOMAIN: &[u8] = b"GoldenRedPallas/PallasMaskOpeningNonce/v0";
 const PROOF_CHALLENGE_LABEL: &[u8] = b"mask-proof";
 const MASK_VARIABLE_GENERATOR_LABEL: &[u8] = b"mask-variable";
 const MASK_BLINDING_GENERATOR_LABEL: &[u8] = b"mask-blinding";
 const PROOF_MAGIC: &[u8; 4] = b"GPBP";
-const PROOF_VERSION: u8 = 2;
+const PROOF_VERSION: u8 = 3;
 const CHALLENGE_OFFSET: usize = 5;
 const MASK_COMMITMENT_OFFSET: usize = CHALLENGE_OFFSET + 32;
 const OPENING_NONCE_COMMITMENT_OFFSET: usize = MASK_COMMITMENT_OFFSET + 32;
 const OPENING_RESPONSE_OFFSET: usize = OPENING_NONCE_COMMITMENT_OFFSET + 32;
-const CONSTRAINT_DIGEST_OFFSET: usize = OPENING_RESPONSE_OFFSET + 32;
+const TRACE_SHARED_POINT_OFFSET: usize = OPENING_RESPONSE_OFFSET + 32;
+const TRACE_TRANSCRIPT_DIGEST_OFFSET: usize = TRACE_SHARED_POINT_OFFSET + 32;
+const TRACE_MASK_DIGEST_OFFSET: usize = TRACE_TRANSCRIPT_DIGEST_OFFSET + 32;
+const TRACE_MASK_OFFSET: usize = TRACE_MASK_DIGEST_OFFSET + 64;
+const CONSTRAINT_DIGEST_OFFSET: usize = TRACE_MASK_OFFSET + 32;
 const PROOF_LEN: usize = CONSTRAINT_DIGEST_OFFSET + 32;
 
 /// Pallas-field proof transcript helper.
@@ -57,6 +62,7 @@ impl PallasProofTranscript {
         public_inputs: &ProofPublicInputs,
         constraint_commitment: PallasMaskConstraintCommitment,
         opening_nonce_commitment: PallasPoint,
+        mask_trace: PallasMaskHashTrace,
     ) -> PallasScalar {
         let mut state = Params::new().hash_length(64).to_state();
         state.update(CHALLENGE_DOMAIN);
@@ -64,11 +70,94 @@ impl PallasProofTranscript {
         update_public_inputs(&mut state, public_inputs);
         state.update(&constraint_commitment.mask_variable.to_bytes());
         state.update(&opening_nonce_commitment.to_bytes());
+        mask_trace.update_transcript(&mut state);
 
         let hash = state.finalize();
         let mut uniform = [0_u8; 64];
         uniform.copy_from_slice(hash.as_bytes());
         PallasScalar::from_uniform_bytes(&uniform)
+    }
+}
+
+/// Deterministic trace for the mask hash-to-field relation.
+///
+/// This is an intermediate circuit-facing format. It records the public
+/// transcript digest, raw hash output, and reduced Pallas scalar that a later
+/// arithmetic circuit must constrain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PallasMaskHashTrace {
+    /// Encoded shared Vesta point used as hash input.
+    pub shared_point: [u8; 32],
+    /// Digest of the DKG mask transcript bytes.
+    pub transcript_digest: [u8; 32],
+    /// Raw 64-byte hash-to-field output before reduction.
+    pub mask_digest: [u8; 64],
+    /// Reduced Pallas scalar mask.
+    pub mask: PallasScalar,
+}
+
+impl PallasMaskHashTrace {
+    /// Build the deterministic trace from public mask inputs.
+    #[must_use]
+    pub fn from_public_inputs(public_inputs: &ProofPublicInputs) -> Self {
+        let transcript = public_inputs.mask_transcript();
+        let transcript_digest = trace_transcript_digest(&transcript);
+        let mut mask_digest = [0_u8; 64];
+        let hash = Params::new()
+            .hash_length(64)
+            .to_state()
+            .update(domains::MASK_TO_FIELD)
+            .update(&public_inputs.shared_point.point().to_bytes())
+            .update(&transcript)
+            .finalize();
+        mask_digest.copy_from_slice(hash.as_bytes());
+        let mask = PallasScalar::from_uniform_bytes(&mask_digest);
+
+        Self {
+            shared_point: public_inputs.shared_point.point().to_bytes(),
+            transcript_digest,
+            mask_digest,
+            mask,
+        }
+    }
+
+    /// Validate this trace against the public inputs.
+    pub fn verify(self, public_inputs: &ProofPublicInputs) -> Result<PallasScalar, ProofError> {
+        let transcript = public_inputs.mask_transcript();
+        if self.shared_point != public_inputs.shared_point.point().to_bytes() {
+            return Err(ProofError::InvalidProof);
+        }
+
+        if self.transcript_digest != trace_transcript_digest(&transcript) {
+            return Err(ProofError::InvalidProof);
+        }
+
+        let mut expected_digest = [0_u8; 64];
+        let hash = Params::new()
+            .hash_length(64)
+            .to_state()
+            .update(domains::MASK_TO_FIELD)
+            .update(&self.shared_point)
+            .update(&transcript)
+            .finalize();
+        expected_digest.copy_from_slice(hash.as_bytes());
+        if self.mask_digest != expected_digest {
+            return Err(ProofError::InvalidProof);
+        }
+
+        let mask = PallasScalar::from_uniform_bytes(&self.mask_digest);
+        if self.mask != mask || public_inputs.mask != mask {
+            return Err(ProofError::InvalidProof);
+        }
+
+        Ok(mask)
+    }
+
+    fn update_transcript(self, state: &mut State) {
+        state.update(&self.shared_point);
+        state.update(&self.transcript_digest);
+        state.update(&self.mask_digest);
+        state.update(&self.mask.to_bytes());
     }
 }
 
@@ -125,11 +214,9 @@ impl PallasMaskConstraints {
     /// Check the public mask relation and return the expected mask.
     pub fn verify_public_relation(
         public_inputs: &ProofPublicInputs,
+        mask_trace: PallasMaskHashTrace,
     ) -> Result<PallasScalar, ProofError> {
-        let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
-        if public_inputs.mask != mask {
-            return Err(ProofError::InvalidProof);
-        }
+        let mask = mask_trace.verify(public_inputs)?;
 
         if public_inputs.mask_commitment != PallasPoint::generator_mul(mask) {
             return Err(ProofError::InvalidProof);
@@ -157,6 +244,7 @@ impl PallasMaskConstraints {
         mask: PallasScalar,
         blinding: PallasScalar,
         constraint_commitment: PallasMaskConstraintCommitment,
+        mask_trace: PallasMaskHashTrace,
     ) -> PallasMaskOpeningProof {
         let nonce = derive_opening_nonce(public_inputs, mask, blinding, constraint_commitment);
         let nonce_commitment =
@@ -165,6 +253,7 @@ impl PallasMaskConstraints {
             public_inputs,
             constraint_commitment,
             nonce_commitment,
+            mask_trace,
         );
         PallasMaskOpeningProof {
             challenge,
@@ -177,12 +266,14 @@ impl PallasMaskConstraints {
         public_inputs: &ProofPublicInputs,
         constraint_commitment: PallasMaskConstraintCommitment,
         opening_proof: PallasMaskOpeningProof,
+        mask_trace: PallasMaskHashTrace,
     ) -> Result<(), ProofError> {
-        let mask = Self::verify_public_relation(public_inputs)?;
+        let mask = Self::verify_public_relation(public_inputs, mask_trace)?;
         let challenge = PallasProofTranscript::proof_challenge(
             public_inputs,
             constraint_commitment,
             opening_proof.nonce_commitment,
+            mask_trace,
         );
         if opening_proof.challenge != challenge {
             return Err(ProofError::InvalidProof);
@@ -218,7 +309,8 @@ impl ProofSystem for PallasProofSkeleton {
         witness: &ProofWitness,
     ) -> Result<MaskProof, ProofError> {
         validate_witness(public_inputs, witness)?;
-        PallasMaskConstraints::verify_public_relation(public_inputs)
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(public_inputs);
+        PallasMaskConstraints::verify_public_relation(public_inputs, mask_trace)
             .map_err(|_| ProofError::InvalidWitness)?;
         Ok(MaskProof {
             backend: BACKEND,
@@ -236,11 +328,13 @@ impl ProofSystem for PallasProofSkeleton {
             public_inputs,
             decoded.constraint_commitment,
             decoded.opening_proof,
+            decoded.mask_trace,
         )?;
         let constraint_digest = constraint_digest(
             public_inputs,
             decoded.constraint_commitment,
             decoded.opening_proof,
+            decoded.mask_trace,
         )?;
 
         if decoded.opening_proof.challenge != decoded.challenge
@@ -265,20 +359,28 @@ struct SkeletonProof {
     challenge: PallasScalar,
     constraint_commitment: PallasMaskConstraintCommitment,
     opening_proof: PallasMaskOpeningProof,
+    mask_trace: PallasMaskHashTrace,
     constraint_digest: [u8; 32],
 }
 
 fn encode_skeleton_proof(public_inputs: &ProofPublicInputs, witness: &ProofWitness) -> Vec<u8> {
     let mask_blinding = derive_mask_blinding(public_inputs, witness);
+    let mask_trace = PallasMaskHashTrace::from_public_inputs(public_inputs);
     let constraint_commitment = PallasMaskConstraints::commit_mask(witness.mask, mask_blinding);
     let opening_proof = PallasMaskConstraints::prove_opening(
         public_inputs,
         witness.mask,
         mask_blinding,
         constraint_commitment,
+        mask_trace,
     );
-    let constraint_digest = constraint_digest(public_inputs, constraint_commitment, opening_proof)
-        .expect("validated proof inputs");
+    let constraint_digest = constraint_digest(
+        public_inputs,
+        constraint_commitment,
+        opening_proof,
+        mask_trace,
+    )
+    .expect("validated proof inputs");
 
     let mut bytes = Vec::with_capacity(PROOF_LEN);
     bytes.extend_from_slice(PROOF_MAGIC);
@@ -287,6 +389,10 @@ fn encode_skeleton_proof(public_inputs: &ProofPublicInputs, witness: &ProofWitne
     bytes.extend_from_slice(&constraint_commitment.mask_variable.to_bytes());
     bytes.extend_from_slice(&opening_proof.nonce_commitment.to_bytes());
     bytes.extend_from_slice(&opening_proof.response.to_bytes());
+    bytes.extend_from_slice(&mask_trace.shared_point);
+    bytes.extend_from_slice(&mask_trace.transcript_digest);
+    bytes.extend_from_slice(&mask_trace.mask_digest);
+    bytes.extend_from_slice(&mask_trace.mask.to_bytes());
     bytes.extend_from_slice(&constraint_digest);
     bytes
 }
@@ -318,8 +424,22 @@ fn decode_skeleton_proof(bytes: &[u8]) -> Result<SkeletonProof, ProofError> {
         PallasPoint::from_bytes(nonce_commitment_bytes).ok_or(ProofError::InvalidProof)?;
 
     let mut response_bytes = [0_u8; 32];
-    response_bytes.copy_from_slice(&bytes[OPENING_RESPONSE_OFFSET..CONSTRAINT_DIGEST_OFFSET]);
+    response_bytes.copy_from_slice(&bytes[OPENING_RESPONSE_OFFSET..TRACE_SHARED_POINT_OFFSET]);
     let response = PallasScalar::from_bytes(response_bytes).ok_or(ProofError::InvalidProof)?;
+
+    let mut shared_point = [0_u8; 32];
+    shared_point.copy_from_slice(&bytes[TRACE_SHARED_POINT_OFFSET..TRACE_TRANSCRIPT_DIGEST_OFFSET]);
+
+    let mut transcript_digest = [0_u8; 32];
+    transcript_digest
+        .copy_from_slice(&bytes[TRACE_TRANSCRIPT_DIGEST_OFFSET..TRACE_MASK_DIGEST_OFFSET]);
+
+    let mut mask_digest = [0_u8; 64];
+    mask_digest.copy_from_slice(&bytes[TRACE_MASK_DIGEST_OFFSET..TRACE_MASK_OFFSET]);
+
+    let mut mask_bytes = [0_u8; 32];
+    mask_bytes.copy_from_slice(&bytes[TRACE_MASK_OFFSET..CONSTRAINT_DIGEST_OFFSET]);
+    let mask = PallasScalar::from_bytes(mask_bytes).ok_or(ProofError::InvalidProof)?;
 
     let mut constraint_digest = [0_u8; 32];
     constraint_digest.copy_from_slice(&bytes[CONSTRAINT_DIGEST_OFFSET..PROOF_LEN]);
@@ -331,6 +451,12 @@ fn decode_skeleton_proof(bytes: &[u8]) -> Result<SkeletonProof, ProofError> {
             challenge,
             nonce_commitment,
             response,
+        },
+        mask_trace: PallasMaskHashTrace {
+            shared_point,
+            transcript_digest,
+            mask_digest,
+            mask,
         },
         constraint_digest,
     })
@@ -373,11 +499,13 @@ fn constraint_digest(
     public_inputs: &ProofPublicInputs,
     constraint_commitment: PallasMaskConstraintCommitment,
     opening_proof: PallasMaskOpeningProof,
+    mask_trace: PallasMaskHashTrace,
 ) -> Result<[u8; 32], ProofError> {
-    let mask = PallasMaskConstraints::verify_public_relation(public_inputs)?;
+    let mask = PallasMaskConstraints::verify_public_relation(public_inputs, mask_trace)?;
     let mut state = Params::new().hash_length(32).to_state();
     state.update(CONSTRAINT_DOMAIN);
     update_public_inputs(&mut state, public_inputs);
+    mask_trace.update_transcript(&mut state);
     state.update(&constraint_commitment.mask_variable.to_bytes());
     state.update(&opening_proof.nonce_commitment.to_bytes());
     state.update(&opening_proof.response.to_bytes());
@@ -389,6 +517,18 @@ fn constraint_digest(
     let mut digest = [0_u8; 32];
     digest.copy_from_slice(hash.as_bytes());
     Ok(digest)
+}
+
+fn trace_transcript_digest(transcript: &[u8]) -> [u8; 32] {
+    let hash = Params::new()
+        .hash_length(32)
+        .to_state()
+        .update(MASK_TRACE_DOMAIN)
+        .update(transcript)
+        .finalize();
+    let mut digest = [0_u8; 32];
+    digest.copy_from_slice(hash.as_bytes());
+    digest
 }
 
 fn update_public_inputs(state: &mut State, public_inputs: &ProofPublicInputs) {
@@ -413,8 +553,9 @@ mod tests {
 
     use super::{
         MASK_COMMITMENT_OFFSET, OPENING_NONCE_COMMITMENT_OFFSET, OPENING_RESPONSE_OFFSET,
-        PallasMaskConstraints, PallasProofSkeleton, PallasProofTranscript, decode_skeleton_proof,
-        derive_pallas_generator,
+        PallasMaskConstraints, PallasMaskHashTrace, PallasProofSkeleton, PallasProofTranscript,
+        TRACE_MASK_DIGEST_OFFSET, TRACE_MASK_OFFSET, TRACE_SHARED_POINT_OFFSET,
+        TRACE_TRANSCRIPT_DIGEST_OFFSET, decode_skeleton_proof, derive_pallas_generator,
     };
     use crate::{ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
@@ -512,10 +653,67 @@ mod tests {
     #[test]
     fn mask_constraints_accept_valid_public_relation() {
         let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
 
         assert_eq!(
-            PallasMaskConstraints::verify_public_relation(&public_inputs),
+            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace),
             Ok(public_inputs.mask)
+        );
+    }
+
+    #[test]
+    fn mask_hash_trace_accepts_valid_trace() {
+        let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+
+        assert_eq!(mask_trace.verify(&public_inputs), Ok(public_inputs.mask));
+    }
+
+    #[test]
+    fn mask_hash_trace_rejects_wrong_shared_point() {
+        let (public_inputs, _) = valid_case();
+        let mut mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        mask_trace.shared_point[0] ^= 1;
+
+        assert_eq!(
+            mask_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_hash_trace_rejects_wrong_transcript_digest() {
+        let (public_inputs, _) = valid_case();
+        let mut mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        mask_trace.transcript_digest[0] ^= 1;
+
+        assert_eq!(
+            mask_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_hash_trace_rejects_wrong_mask_digest() {
+        let (public_inputs, _) = valid_case();
+        let mut mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        mask_trace.mask_digest[0] ^= 1;
+
+        assert_eq!(
+            mask_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_hash_trace_rejects_wrong_mask() {
+        let (public_inputs, _) = valid_case();
+        let mut mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        mask_trace.mask += PallasScalar::ONE;
+
+        assert_eq!(
+            mask_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
         );
     }
 
@@ -523,9 +721,10 @@ mod tests {
     fn mask_constraints_reject_wrong_public_mask() {
         let (mut public_inputs, _) = valid_case();
         public_inputs.mask += PallasScalar::ONE;
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
 
         assert_eq!(
-            PallasMaskConstraints::verify_public_relation(&public_inputs),
+            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace),
             Err(ProofError::InvalidProof)
         );
     }
@@ -534,9 +733,10 @@ mod tests {
     fn mask_constraints_reject_wrong_public_mask_commitment() {
         let (mut public_inputs, _) = valid_case();
         public_inputs.mask_commitment += PallasPoint::generator();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
 
         assert_eq!(
-            PallasMaskConstraints::verify_public_relation(&public_inputs),
+            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace),
             Err(ProofError::InvalidProof)
         );
     }
@@ -613,6 +813,54 @@ mod tests {
         let (public_inputs, witness) = valid_case();
         let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
         proof.bytes[OPENING_RESPONSE_OFFSET] ^= 1;
+
+        assert_eq!(
+            PallasProofSkeleton::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn skeleton_rejects_tampered_trace_shared_point() {
+        let (public_inputs, witness) = valid_case();
+        let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
+        proof.bytes[TRACE_SHARED_POINT_OFFSET] ^= 1;
+
+        assert_eq!(
+            PallasProofSkeleton::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn skeleton_rejects_tampered_trace_transcript_digest() {
+        let (public_inputs, witness) = valid_case();
+        let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
+        proof.bytes[TRACE_TRANSCRIPT_DIGEST_OFFSET] ^= 1;
+
+        assert_eq!(
+            PallasProofSkeleton::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn skeleton_rejects_tampered_trace_mask_digest() {
+        let (public_inputs, witness) = valid_case();
+        let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
+        proof.bytes[TRACE_MASK_DIGEST_OFFSET] ^= 1;
+
+        assert_eq!(
+            PallasProofSkeleton::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn skeleton_rejects_tampered_trace_mask() {
+        let (public_inputs, witness) = valid_case();
+        let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
+        proof.bytes[TRACE_MASK_OFFSET] ^= 1;
 
         assert_eq!(
             PallasProofSkeleton::verify(&public_inputs, &proof),

@@ -64,7 +64,9 @@ The skeleton currently covers:
 - proof framing with backend id, magic bytes, version, challenge, constraint
   commitment, opening nonce commitment, opening response, and digest;
 - deterministic Pallas generator derivation for backend tests;
-- public mask relation checks for `mask = H(shared_point, transcript)`;
+- a deterministic mask hash-to-field trace containing the shared-point encoding,
+  transcript digest, raw 64-byte hash output, and reduced Pallas mask;
+- trace validation for `mask = H(shared_point, transcript)`;
 - public commitment checks for `mask_commitment = mask * Pallas::generator()`;
 - a Schnorr-style proof that the mask-variable commitment opens to the public
   mask without serializing the blinding;
@@ -73,6 +75,6 @@ The skeleton currently covers:
 
 ## Next Implementation Step
 
-Replace the public `derive_mask` check with arithmetic constraints for the
-hash-to-field relation, then fold the Schnorr opening proof into the Pallas-field
-proof transcript.
+Replace hash trace validation with arithmetic constraints for the hash-to-field
+relation, then fold the Schnorr opening proof into the Pallas-field proof
+transcript.
