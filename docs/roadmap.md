@@ -55,6 +55,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Replace opened mask commitment with a Schnorr-style opening proof.
 - [x] Add deterministic hash-to-field trace for mask derivation.
 - [x] Add byte-limb constraint trace for mask derivation.
+- [x] Add prover-side Vesta DH constraint trace.
 - [ ] Implement Pallas-field constraints for eVRF mask computation.
 - [ ] Implement batch verification.
 - [ ] Add malformed-transcript negative tests.

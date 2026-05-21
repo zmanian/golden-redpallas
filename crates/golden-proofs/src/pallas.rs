@@ -6,7 +6,7 @@
 //! will replace with a zero-knowledge proof over the Pallas scalar field.
 
 use blake2b_simd::{Params, State};
-use golden_pallas::{PallasPoint, PallasScalar, domains};
+use golden_pallas::{PallasPoint, PallasScalar, VestaPoint, VestaScalar, domains};
 
 use crate::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
@@ -210,6 +210,71 @@ impl PallasMaskHashConstraintTrace {
     }
 }
 
+/// Prover-side byte-limb trace for the Vesta Diffie-Hellman relation.
+///
+/// This trace intentionally contains the dealer helper secret limbs and is not
+/// serialized into public proof bytes. It is an intermediate representation for
+/// the future zero-knowledge eVRF circuit constraints.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PallasVestaDhConstraintTrace {
+    /// Dealer helper secret scalar limbs.
+    pub dealer_secret_limbs: Vec<u16>,
+    /// Dealer helper public key encoding limbs.
+    pub dealer_public_limbs: Vec<u16>,
+    /// Participant helper public key encoding limbs.
+    pub participant_public_limbs: Vec<u16>,
+    /// Shared Vesta point encoding limbs.
+    pub shared_point_limbs: Vec<u16>,
+}
+
+impl PallasVestaDhConstraintTrace {
+    /// Build a prover-side DH trace from public inputs and witness.
+    #[must_use]
+    pub fn from_witness(public_inputs: &ProofPublicInputs, witness: &ProofWitness) -> Self {
+        Self {
+            dealer_secret_limbs: bytes_to_limbs(&witness.dealer_secret.to_bytes()),
+            dealer_public_limbs: bytes_to_limbs(&public_inputs.dealer_public.point().to_bytes()),
+            participant_public_limbs: bytes_to_limbs(
+                &public_inputs.participant_public.point().to_bytes(),
+            ),
+            shared_point_limbs: bytes_to_limbs(&witness.shared_point.to_bytes()),
+        }
+    }
+
+    /// Validate limb lengths, byte ranges, canonical encodings, and Vesta
+    /// scalar-multiplication relations against public inputs.
+    pub fn verify(&self, public_inputs: &ProofPublicInputs) -> Result<(), ProofError> {
+        let dealer_secret =
+            VestaScalar::from_bytes(limbs_to_array::<32>(&self.dealer_secret_limbs)?)
+                .ok_or(ProofError::InvalidProof)?;
+        let dealer_public =
+            VestaPoint::from_bytes(limbs_to_array::<32>(&self.dealer_public_limbs)?)
+                .ok_or(ProofError::InvalidProof)?;
+        let participant_public =
+            VestaPoint::from_bytes(limbs_to_array::<32>(&self.participant_public_limbs)?)
+                .ok_or(ProofError::InvalidProof)?;
+        let shared_point = VestaPoint::from_bytes(limbs_to_array::<32>(&self.shared_point_limbs)?)
+            .ok_or(ProofError::InvalidProof)?;
+
+        if dealer_public != public_inputs.dealer_public.point()
+            || participant_public != public_inputs.participant_public.point()
+            || shared_point != public_inputs.shared_point.point()
+        {
+            return Err(ProofError::InvalidProof);
+        }
+
+        if VestaPoint::generator_mul(dealer_secret) != dealer_public {
+            return Err(ProofError::InvalidProof);
+        }
+
+        if participant_public.mul_scalar(dealer_secret) != shared_point {
+            return Err(ProofError::InvalidProof);
+        }
+
+        Ok(())
+    }
+}
+
 /// Derive a deterministic Pallas point for backend tests.
 ///
 /// This is a skeleton boundary, not a substitute for independently generated
@@ -358,6 +423,10 @@ impl ProofSystem for PallasProofSkeleton {
         witness: &ProofWitness,
     ) -> Result<MaskProof, ProofError> {
         validate_witness(public_inputs, witness)?;
+        let dh_trace = PallasVestaDhConstraintTrace::from_witness(public_inputs, witness);
+        dh_trace
+            .verify(public_inputs)
+            .map_err(|_| ProofError::InvalidWitness)?;
         let mask_trace = PallasMaskHashTrace::from_public_inputs(public_inputs);
         PallasMaskConstraints::verify_public_relation(public_inputs, mask_trace)
             .map_err(|_| ProofError::InvalidWitness)?;
@@ -415,6 +484,8 @@ struct SkeletonProof {
 fn encode_skeleton_proof(public_inputs: &ProofPublicInputs, witness: &ProofWitness) -> Vec<u8> {
     let mask_blinding = derive_mask_blinding(public_inputs, witness);
     let mask_trace = PallasMaskHashTrace::from_public_inputs(public_inputs);
+    let dh_trace = PallasVestaDhConstraintTrace::from_witness(public_inputs, witness);
+    dh_trace.verify(public_inputs).expect("validated DH trace");
     let constraint_commitment = PallasMaskConstraints::commit_mask(witness.mask, mask_blinding);
     let opening_proof = PallasMaskConstraints::prove_opening(
         public_inputs,
@@ -619,16 +690,16 @@ fn update_len_prefixed(state: &mut State, bytes: &[u8]) {
 mod tests {
     use golden_core::{FieldElement, ParticipantId, Polynomial};
     use golden_pallas::{
-        HelperPublicKey, HelperSecretKey, PallasPoint, PallasScalar, VestaScalar,
+        HelperPublicKey, HelperSecretKey, PallasPoint, PallasScalar, VestaPoint, VestaScalar,
         commit_polynomial, derive_mask,
     };
 
     use super::{
         MASK_COMMITMENT_OFFSET, OPENING_NONCE_COMMITMENT_OFFSET, OPENING_RESPONSE_OFFSET,
         PallasMaskConstraints, PallasMaskHashConstraintTrace, PallasMaskHashTrace,
-        PallasProofSkeleton, PallasProofTranscript, TRACE_MASK_DIGEST_OFFSET, TRACE_MASK_OFFSET,
-        TRACE_SHARED_POINT_OFFSET, TRACE_TRANSCRIPT_DIGEST_OFFSET, decode_skeleton_proof,
-        derive_pallas_generator,
+        PallasProofSkeleton, PallasProofTranscript, PallasVestaDhConstraintTrace,
+        TRACE_MASK_DIGEST_OFFSET, TRACE_MASK_OFFSET, TRACE_SHARED_POINT_OFFSET,
+        TRACE_TRANSCRIPT_DIGEST_OFFSET, decode_skeleton_proof, derive_pallas_generator,
     };
     use crate::{ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
@@ -802,6 +873,76 @@ mod tests {
 
         assert_eq!(
             constraint_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn vesta_dh_constraint_trace_accepts_valid_trace() {
+        let (public_inputs, witness) = valid_case();
+        let dh_trace = PallasVestaDhConstraintTrace::from_witness(&public_inputs, &witness);
+
+        assert_eq!(dh_trace.verify(&public_inputs), Ok(()));
+    }
+
+    #[test]
+    fn vesta_dh_constraint_trace_rejects_malformed_secret_length() {
+        let (public_inputs, witness) = valid_case();
+        let mut dh_trace = PallasVestaDhConstraintTrace::from_witness(&public_inputs, &witness);
+        dh_trace.dealer_secret_limbs.pop();
+
+        assert_eq!(
+            dh_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn vesta_dh_constraint_trace_rejects_out_of_range_point_limb() {
+        let (public_inputs, witness) = valid_case();
+        let mut dh_trace = PallasVestaDhConstraintTrace::from_witness(&public_inputs, &witness);
+        dh_trace.dealer_public_limbs[0] = 256;
+
+        assert_eq!(
+            dh_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn vesta_dh_constraint_trace_rejects_non_canonical_secret() {
+        let (public_inputs, witness) = valid_case();
+        let mut dh_trace = PallasVestaDhConstraintTrace::from_witness(&public_inputs, &witness);
+        dh_trace.dealer_secret_limbs = vec![255; 32];
+
+        assert_eq!(
+            dh_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn vesta_dh_constraint_trace_rejects_wrong_dealer_public() {
+        let (public_inputs, witness) = valid_case();
+        let mut dh_trace = PallasVestaDhConstraintTrace::from_witness(&public_inputs, &witness);
+        dh_trace.dealer_public_limbs =
+            super::bytes_to_limbs(&VestaPoint::generator_mul(VestaScalar::from_u64(99)).to_bytes());
+
+        assert_eq!(
+            dh_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn vesta_dh_constraint_trace_rejects_wrong_shared_point() {
+        let (public_inputs, witness) = valid_case();
+        let mut dh_trace = PallasVestaDhConstraintTrace::from_witness(&public_inputs, &witness);
+        dh_trace.shared_point_limbs =
+            super::bytes_to_limbs(&VestaPoint::generator_mul(VestaScalar::from_u64(99)).to_bytes());
+
+        assert_eq!(
+            dh_trace.verify(&public_inputs),
             Err(ProofError::InvalidProof)
         );
     }

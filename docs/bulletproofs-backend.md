@@ -68,6 +68,9 @@ The skeleton currently covers:
   transcript digest, raw 64-byte hash output, and reduced Pallas mask;
 - a constraint-oriented byte-limb view of the mask trace with length, range, and
   canonical mask encoding checks;
+- a prover-side Vesta DH constraint trace for
+  `dealer_public = dealer_secret * Vesta::generator()` and
+  `shared_point = dealer_secret * participant_public`;
 - trace validation for `mask = H(shared_point, transcript)`;
 - public commitment checks for `mask_commitment = mask * Pallas::generator()`;
 - a Schnorr-style proof that the mask-variable commitment opens to the public
@@ -78,5 +81,5 @@ The skeleton currently covers:
 ## Next Implementation Step
 
 Replace the byte-limb trace checks with arithmetic constraints for the
-hash-to-field relation, then fold the Schnorr opening proof into the Pallas-field
-proof transcript.
+hash-to-field and Vesta scalar-multiplication relations, then fold the Schnorr
+opening proof into the Pallas-field proof transcript.

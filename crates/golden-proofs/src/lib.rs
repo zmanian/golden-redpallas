@@ -17,7 +17,7 @@ pub use fixture::FixtureProofSystem;
 pub use pallas::{
     PallasMaskConstraintCommitment, PallasMaskConstraints, PallasMaskHashConstraintTrace,
     PallasMaskHashTrace, PallasMaskOpeningProof, PallasProofSkeleton, PallasProofTranscript,
-    derive_pallas_generator,
+    PallasVestaDhConstraintTrace, derive_pallas_generator,
 };
 pub use types::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
