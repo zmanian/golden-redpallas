@@ -79,7 +79,7 @@ mod tests {
         field::test_field::Fp,
         polynomial::{Polynomial, interpolate_at_zero},
         transcript::ParticipantId,
-        verify_transcript,
+        validate_transcript,
     };
 
     #[test]
@@ -107,7 +107,7 @@ mod tests {
         transcript.proof_status = ProofStatus::Verified;
 
         assert_eq!(
-            verify_transcript(&transcript, participants[0], |_share, _public| true),
+            validate_transcript(&transcript, participants[0], |_share, _public| true),
             Ok(())
         );
 
@@ -143,7 +143,7 @@ mod tests {
         let transcript = build_transcript(config, &secret, |_| (Fp(3), 4_u8)).expect("transcript");
 
         assert_eq!(
-            verify_transcript(&transcript, participant, |_share, _public| true),
+            validate_transcript(&transcript, participant, |_share, _public| true),
             Err(VerificationError::ProofNotVerified)
         );
     }

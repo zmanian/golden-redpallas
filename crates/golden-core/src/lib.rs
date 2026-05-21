@@ -4,15 +4,19 @@
 //! code. It models the data flow that Pallas/Vesta and Bulletproofs adapters
 //! must satisfy.
 
+pub mod aggregation;
+pub mod config;
 pub mod dealer;
 pub mod field;
 pub mod polynomial;
 pub mod transcript;
 
-pub use dealer::{DealerConfig, DealerError, DealerSecret, recover_share};
+pub use aggregation::{AggregatedShare, AggregationError, aggregate_public_key, aggregate_share};
+pub use config::{ConfigError, ProtocolConfig};
+pub use dealer::{DealerConfig, DealerError, DealerSecret, build_transcript, recover_share};
 pub use field::FieldElement;
 pub use polynomial::{InterpolationError, Polynomial, interpolate_at_zero};
 pub use transcript::{
     MaskedShare, ParticipantId, ProofStatus, PublicPolynomial, Transcript, VerificationError,
-    verify_transcript,
+    VerifiedTranscript, validate_transcript, verify_transcript,
 };

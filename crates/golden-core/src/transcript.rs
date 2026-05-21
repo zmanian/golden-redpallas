@@ -62,6 +62,24 @@ pub struct Transcript<F, C> {
     pub proof_status: ProofStatus,
 }
 
+/// A transcript that passed proof and commitment-equation checks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedTranscript<F, C>(Transcript<F, C>);
+
+impl<F, C> VerifiedTranscript<F, C> {
+    /// Borrow the underlying transcript.
+    #[must_use]
+    pub const fn as_ref(&self) -> &Transcript<F, C> {
+        &self.0
+    }
+
+    /// Consume the wrapper and return the underlying transcript.
+    #[must_use]
+    pub fn into_inner(self) -> Transcript<F, C> {
+        self.0
+    }
+}
+
 /// Transcript verification failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerificationError {
@@ -75,8 +93,8 @@ pub enum VerificationError {
     CommitmentEquationFailed,
 }
 
-/// Verify transcript metadata and a caller-provided commitment equation.
-pub fn verify_transcript<F, C>(
+/// Validate transcript metadata and a caller-provided commitment equation.
+pub fn validate_transcript<F, C>(
     transcript: &Transcript<F, C>,
     target: ParticipantId,
     commitment_equation: impl Fn(&MaskedShare<F, C>, &PublicPolynomial<C>) -> bool,
@@ -110,4 +128,17 @@ where
     }
 
     Ok(())
+}
+
+/// Verify a transcript and return a type that can be safely aggregated.
+pub fn verify_transcript<F, C>(
+    transcript: Transcript<F, C>,
+    target: ParticipantId,
+    commitment_equation: impl Fn(&MaskedShare<F, C>, &PublicPolynomial<C>) -> bool,
+) -> Result<VerifiedTranscript<F, C>, VerificationError>
+where
+    F: FieldElement,
+{
+    validate_transcript(&transcript, target, commitment_equation)?;
+    Ok(VerifiedTranscript(transcript))
 }

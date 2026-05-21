@@ -13,6 +13,10 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 
 ## Milestone 1: Pallas Core Types
 
+- [x] Add validated protocol configuration for threshold and participants.
+- [x] Add verified transcript wrapper for aggregation-safe APIs.
+- [x] Add participant share aggregation across verified dealer transcripts.
+- [x] Add generic public-key commitment aggregation.
 - [ ] Add `pasta_curves` dependency.
 - [ ] Bind `golden_core::FieldElement` to `pasta_curves::pallas::Scalar`.
 - [ ] Add serialization for Pallas scalars and points.
