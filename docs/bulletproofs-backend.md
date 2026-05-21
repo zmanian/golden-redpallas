@@ -62,18 +62,17 @@ The skeleton currently covers:
 - deterministic Fiat-Shamir challenge derivation over the Golden mask public
   inputs;
 - proof framing with backend id, magic bytes, version, challenge, constraint
-  commitment, opened blinding, and digest;
+  commitment, opening nonce commitment, opening response, and digest;
 - deterministic Pallas generator derivation for backend tests;
 - public mask relation checks for `mask = H(shared_point, transcript)`;
 - public commitment checks for `mask_commitment = mask * Pallas::generator()`;
-- an opened Pallas commitment to the mask witness variable using backend
-  generators;
+- a Schnorr-style proof that the mask-variable commitment opens to the public
+  mask without serializing the blinding;
 - single and batch verification behavior under the `ProofSystem` trait;
 - malformed, tampered proof, and malformed constraint rejection tests.
 
 ## Next Implementation Step
 
-Move from opened constraint commitments to a real Pallas-field proof object. The
-next concrete layer should prove the mask commitment opening without revealing
-the opening, then replace the public `derive_mask` check with arithmetic
-constraints for the hash-to-field relation.
+Replace the public `derive_mask` check with arithmetic constraints for the
+hash-to-field relation, then fold the Schnorr opening proof into the Pallas-field
+proof transcript.
