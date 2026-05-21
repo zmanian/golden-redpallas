@@ -56,6 +56,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Add deterministic hash-to-field trace for mask derivation.
 - [x] Add byte-limb constraint trace for mask derivation.
 - [x] Add prover-side Vesta DH constraint trace.
+- [x] Wire Pallas proof backend into proofed DKG recovery.
 - [ ] Implement Pallas-field constraints for eVRF mask computation.
 - [ ] Implement batch verification.
 - [ ] Add malformed-transcript negative tests.

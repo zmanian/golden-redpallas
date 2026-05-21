@@ -75,6 +75,8 @@ The skeleton currently covers:
 - public commitment checks for `mask_commitment = mask * Pallas::generator()`;
 - a Schnorr-style proof that the mask-variable commitment opens to the public
   mask without serializing the blinding;
+- end-to-end proofed DKG recovery using the Pallas backend skeleton under the
+  `pallas-backend` feature;
 - single and batch verification behavior under the `ProofSystem` trait;
 - malformed, tampered proof, and malformed constraint rejection tests.
 

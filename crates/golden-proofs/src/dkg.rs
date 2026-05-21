@@ -43,6 +43,10 @@ pub struct ProofedDkgSimulation<P> {
     proof_system: PhantomData<P>,
 }
 
+/// Proof-aware DKG simulation using the feature-gated Pallas backend skeleton.
+#[cfg(feature = "pallas-backend")]
+pub type PallasProofedDkgSimulation = ProofedDkgSimulation<crate::PallasProofSkeleton>;
+
 impl<P: ProofSystem> ProofedDkgSimulation<P> {
     /// Build a proof-aware simulation from a deterministic fixture.
     pub fn from_fixture(fixture: &DkgFixture) -> Result<Self, ProofedDkgError> {
@@ -356,6 +360,8 @@ mod tests {
     use golden_pallas::{DkgFixture, PallasPoint, PallasScalar};
 
     use crate::{FixtureProofSystem, ProofError};
+    #[cfg(feature = "pallas-backend")]
+    use crate::{PallasProofSkeleton, PallasProofedDkgSimulation};
 
     use super::{ProofedDkgError, ProofedDkgSimulation, recover_with_proofs};
 
@@ -388,6 +394,59 @@ mod tests {
 
         assert_eq!(interpolate_at_zero(&samples[..2]), Ok(aggregate_secret));
         assert_eq!(interpolate_at_zero(&samples), Ok(aggregate_secret));
+    }
+
+    #[cfg(feature = "pallas-backend")]
+    #[test]
+    fn pallas_backend_recovers_all_participant_shares() {
+        let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
+        let proofed = PallasProofedDkgSimulation::from_fixture(&fixture).expect("proofed");
+        let aggregate_secret = proofed.simulation.aggregate_secret().expect("secret");
+        let aggregate_public_key = proofed.aggregate_public_key().expect("public key");
+
+        assert_eq!(
+            aggregate_public_key,
+            PallasPoint::generator_mul(aggregate_secret)
+        );
+
+        let samples = proofed
+            .simulation
+            .participants
+            .iter()
+            .map(|participant| {
+                let share = proofed
+                    .recover_participant(participant.id)
+                    .expect("participant share");
+                (PallasScalar::from_u64(participant.id.get()), share.value)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(interpolate_at_zero(&samples[..2]), Ok(aggregate_secret));
+        assert_eq!(interpolate_at_zero(&samples), Ok(aggregate_secret));
+    }
+
+    #[cfg(feature = "pallas-backend")]
+    #[test]
+    fn pallas_backend_rejects_tampered_proof_in_dkg_recovery() {
+        let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
+        let proofed = PallasProofedDkgSimulation::from_fixture(&fixture).expect("proofed");
+        let participant = proofed.simulation.participants[0].id;
+        let mut proofed_transcripts = proofed.proofed_transcripts.clone();
+        let proof = &mut proofed_transcripts[0].proofs[0].proof;
+        let last = proof.bytes.len() - 1;
+        proof.bytes[last] ^= 1;
+
+        assert!(matches!(
+            recover_with_proofs::<PallasProofSkeleton>(
+                &proofed.simulation,
+                participant,
+                &proofed_transcripts,
+            ),
+            Err(ProofedDkgError::BatchProof {
+                source: ProofError::InvalidProof,
+                ..
+            })
+        ));
     }
 
     #[test]
