@@ -1,7 +1,18 @@
-//! Pallas/Vesta adapter boundary for Golden.
+//! Pallas/Vesta bindings for Golden.
 //!
-//! This crate is intentionally a placeholder until the concrete Pasta-cycle
-//! dependencies and proof system are selected.
+//! This crate binds the protocol-independent `golden-core` APIs to the Pasta
+//! curve cycle used by Zcash Orchard. The proof system and eVRF are still
+//! separate workstreams; this crate currently provides concrete scalar, group,
+//! and commitment-equation operations.
+
+mod pallas_types;
+mod vesta_types;
+
+pub use pallas_types::{
+    PallasPoint, PallasScalar, commit_polynomial, evaluate_public_polynomial,
+    verify_masked_share_commitment,
+};
+pub use vesta_types::{VestaPoint, VestaScalar};
 
 /// Domain separators reserved for the Pallas/Vesta Golden instantiation.
 pub mod domains {
@@ -23,6 +34,6 @@ impl PallasVestaEvrf {
     /// Return the current implementation status.
     #[must_use]
     pub const fn status() -> &'static str {
-        "not implemented: select pasta_curves bindings and Bulletproofs backend"
+        "not implemented: eVRF mask derivation and Bulletproofs backend are pending"
     }
 }

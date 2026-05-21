@@ -17,15 +17,16 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Add verified transcript wrapper for aggregation-safe APIs.
 - [x] Add participant share aggregation across verified dealer transcripts.
 - [x] Add generic public-key commitment aggregation.
-- [ ] Add `pasta_curves` dependency.
-- [ ] Bind `golden_core::FieldElement` to `pasta_curves::pallas::Scalar`.
-- [ ] Add serialization for Pallas scalars and points.
-- [ ] Add Pallas public polynomial commitments.
+- [x] Add `pasta_curves` dependency.
+- [x] Bind `golden_core::FieldElement` to `pasta_curves::pallas::Scalar`.
+- [x] Add serialization for Pallas scalars and points.
+- [x] Add Pallas public polynomial commitments.
 - [ ] Define participant identifiers compatible with FROST identifiers.
 
 ## Milestone 2: Vesta eVRF
 
 - [ ] Select hash-to-Vesta construction and domain separators.
+- [x] Add Vesta helper-curve point and scalar wrappers.
 - [ ] Implement dealer and participant helper-curve keys.
 - [ ] Implement DH-derived mask generation.
 - [ ] Add test vectors for deterministic transcripts.

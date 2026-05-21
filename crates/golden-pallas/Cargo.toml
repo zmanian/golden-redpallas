@@ -10,6 +10,7 @@ rust-version.workspace = true
 
 [dependencies]
 golden-core = { path = "../golden-core" }
+pasta_curves = "0.5.1"
 
 [lints]
 workspace = true
