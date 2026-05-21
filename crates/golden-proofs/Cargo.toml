@@ -13,5 +13,9 @@ blake2b_simd = "1.0.4"
 golden-core = { path = "../golden-core" }
 golden-pallas = { path = "../golden-pallas" }
 
+[features]
+default = []
+pallas-backend = []
+
 [lints]
 workspace = true

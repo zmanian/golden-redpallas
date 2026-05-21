@@ -42,9 +42,32 @@ The fixture backend currently checks:
 - proof digest changes when session, keys, mask commitment, or public polynomial
   change.
 
+## Pallas Backend Skeleton
+
+`golden-proofs` now exposes a feature-gated `pallas-backend` skeleton:
+
+```sh
+cargo test -p golden-proofs --features pallas-backend
+```
+
+The `PallasProofSkeleton` backend is still not zero-knowledge. It exists to pin
+the Pallas-specific transcript domains, proof byte framing, deterministic
+challenge derivation, and generator-derivation boundary that the production
+backend will replace with real Pallas-field Bulletproofs constraints.
+
+The skeleton currently covers:
+
+- public/witness consistency checks shared with the fixture backend;
+- deterministic Fiat-Shamir challenge derivation over the Golden mask public
+  inputs;
+- proof framing with backend id, magic bytes, version, challenge, and digest;
+- deterministic Pallas generator derivation for backend tests;
+- single and batch verification behavior under the `ProofSystem` trait;
+- malformed and tampered proof rejection tests.
+
 ## Next Implementation Step
 
-Add a `golden-proofs::pallas` proof backend behind a feature flag. The
-implementation should satisfy the same `ProofSystem` trait and reuse the fixture
-tests as behavioral tests, then add real proof serialization and batch
-verification tests.
+Replace the skeleton digest with the first real constraint layer: a committed
+mask value and an arithmetic proof that the public mask matches the shared Vesta
+point and transcript. Keep the existing proof framing tests as compatibility
+tests while adding negative tests for malformed constraint witnesses.

@@ -1,9 +1,11 @@
 //! Deterministic fixture backend for proof-boundary tests.
 
 use blake2b_simd::Params;
-use golden_pallas::{PallasPoint, derive_mask};
 
-use crate::{MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
+use crate::{
+    MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
+    witness::validate_witness,
+};
 
 const BACKEND: &str = "golden-fixture-proof/v0";
 const DIGEST_DOMAIN: &[u8] = b"GoldenRedPallas/FixtureProof/v0";
@@ -46,40 +48,6 @@ impl ProofSystem for FixtureProofSystem {
         }
         Ok(())
     }
-}
-
-fn validate_witness(
-    public_inputs: &ProofPublicInputs,
-    witness: &ProofWitness,
-) -> Result<(), ProofError> {
-    let dealer_public = public_inputs.dealer_public.point();
-    let expected_dealer_public = golden_pallas::VestaPoint::generator_mul(witness.dealer_secret);
-    if dealer_public != expected_dealer_public {
-        return Err(ProofError::InvalidWitness);
-    }
-
-    let expected_shared = public_inputs
-        .participant_public
-        .point()
-        .mul_scalar(witness.dealer_secret);
-    if witness.shared_point != expected_shared {
-        return Err(ProofError::InvalidWitness);
-    }
-
-    if public_inputs.shared_point.point() != witness.shared_point {
-        return Err(ProofError::InvalidWitness);
-    }
-
-    let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
-    if public_inputs.mask != mask || witness.mask != mask {
-        return Err(ProofError::InvalidWitness);
-    }
-
-    if public_inputs.mask_commitment != PallasPoint::generator_mul(mask) {
-        return Err(ProofError::InvalidWitness);
-    }
-
-    Ok(())
 }
 
 fn digest_public_inputs(public_inputs: &ProofPublicInputs) -> Vec<u8> {

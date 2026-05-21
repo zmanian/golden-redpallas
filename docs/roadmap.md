@@ -50,6 +50,7 @@ full staged implementation plan, test matrix, CI plan, and release gates.
 - [x] Share DKG mask transcript binding across DKG and proof code.
 - [x] Document Bulletproofs backend decision constraints.
 - [x] Decide between existing Bulletproofs R1CS library and custom implementation.
+- [x] Add feature-gated Pallas backend skeleton and transcript tests.
 - [ ] Implement Pallas-field constraints for eVRF mask computation.
 - [ ] Implement batch verification.
 - [ ] Add malformed-transcript negative tests.
