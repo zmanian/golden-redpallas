@@ -52,22 +52,28 @@ cargo test -p golden-proofs --features pallas-backend
 
 The `PallasProofSkeleton` backend is still not zero-knowledge. It exists to pin
 the Pallas-specific transcript domains, proof byte framing, deterministic
-challenge derivation, and generator-derivation boundary that the production
-backend will replace with real Pallas-field Bulletproofs constraints.
+challenge derivation, generator-derivation boundary, and first executable
+mask-relation constraint layer that the production backend will replace with
+real Pallas-field Bulletproofs constraints.
 
 The skeleton currently covers:
 
 - public/witness consistency checks shared with the fixture backend;
 - deterministic Fiat-Shamir challenge derivation over the Golden mask public
   inputs;
-- proof framing with backend id, magic bytes, version, challenge, and digest;
+- proof framing with backend id, magic bytes, version, challenge, constraint
+  commitment, opened blinding, and digest;
 - deterministic Pallas generator derivation for backend tests;
+- public mask relation checks for `mask = H(shared_point, transcript)`;
+- public commitment checks for `mask_commitment = mask * Pallas::generator()`;
+- an opened Pallas commitment to the mask witness variable using backend
+  generators;
 - single and batch verification behavior under the `ProofSystem` trait;
-- malformed and tampered proof rejection tests.
+- malformed, tampered proof, and malformed constraint rejection tests.
 
 ## Next Implementation Step
 
-Replace the skeleton digest with the first real constraint layer: a committed
-mask value and an arithmetic proof that the public mask matches the shared Vesta
-point and transcript. Keep the existing proof framing tests as compatibility
-tests while adding negative tests for malformed constraint witnesses.
+Move from opened constraint commitments to a real Pallas-field proof object. The
+next concrete layer should prove the mask commitment opening without revealing
+the opening, then replace the public `derive_mask` check with arithmetic
+constraints for the hash-to-field relation.

@@ -2,24 +2,32 @@
 //!
 //! This module is not a production Bulletproofs implementation. It pins the
 //! Pallas transcript domains, proof framing, generator derivation boundary, and
-//! `ProofSystem` behavior that the real backend will replace with a
-//! zero-knowledge proof over the Pallas scalar field.
+//! the first executable mask-relation constraint layer that the real backend
+//! will replace with a zero-knowledge proof over the Pallas scalar field.
 
 use blake2b_simd::{Params, State};
-use golden_pallas::{PallasPoint, PallasScalar};
+use golden_pallas::{PallasPoint, PallasScalar, derive_mask};
 
 use crate::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
     witness::validate_witness,
 };
 
-const BACKEND: &str = "golden-pallas-proof-skeleton/v0";
+const BACKEND: &str = "golden-pallas-proof-skeleton/v1";
 const CHALLENGE_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofChallenge/v0";
-const DIGEST_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofDigest/v0";
+const CONSTRAINT_DOMAIN: &[u8] = b"GoldenRedPallas/PallasMaskConstraints/v0";
 const GENERATOR_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofGenerator/v0";
+const MASK_BLINDING_DOMAIN: &[u8] = b"GoldenRedPallas/PallasMaskBlinding/v0";
+const PROOF_CHALLENGE_LABEL: &[u8] = b"mask-proof";
+const MASK_VARIABLE_GENERATOR_LABEL: &[u8] = b"mask-variable";
+const MASK_BLINDING_GENERATOR_LABEL: &[u8] = b"mask-blinding";
 const PROOF_MAGIC: &[u8; 4] = b"GPBP";
-const PROOF_VERSION: u8 = 0;
-const PROOF_LEN: usize = 4 + 1 + 32 + 32;
+const PROOF_VERSION: u8 = 1;
+const CHALLENGE_OFFSET: usize = 5;
+const MASK_COMMITMENT_OFFSET: usize = CHALLENGE_OFFSET + 32;
+const MASK_BLINDING_OFFSET: usize = MASK_COMMITMENT_OFFSET + 32;
+const CONSTRAINT_DIGEST_OFFSET: usize = MASK_BLINDING_OFFSET + 32;
+const PROOF_LEN: usize = CONSTRAINT_DIGEST_OFFSET + 32;
 
 /// Pallas-field proof transcript helper.
 ///
@@ -43,16 +51,20 @@ impl PallasProofTranscript {
         PallasScalar::from_uniform_bytes(&uniform)
     }
 
-    fn proof_digest(public_inputs: &ProofPublicInputs, challenge: PallasScalar) -> [u8; 32] {
-        let mut state = Params::new().hash_length(32).to_state();
-        state.update(DIGEST_DOMAIN);
+    fn proof_challenge(
+        public_inputs: &ProofPublicInputs,
+        constraint_commitment: PallasMaskConstraintCommitment,
+    ) -> PallasScalar {
+        let mut state = Params::new().hash_length(64).to_state();
+        state.update(CHALLENGE_DOMAIN);
+        update_len_prefixed(&mut state, PROOF_CHALLENGE_LABEL);
         update_public_inputs(&mut state, public_inputs);
-        state.update(&challenge.to_bytes());
+        state.update(&constraint_commitment.mask_variable.to_bytes());
 
         let hash = state.finalize();
-        let mut digest = [0_u8; 32];
-        digest.copy_from_slice(hash.as_bytes());
-        digest
+        let mut uniform = [0_u8; 64];
+        uniform.copy_from_slice(hash.as_bytes());
+        PallasScalar::from_uniform_bytes(&uniform)
     }
 }
 
@@ -72,11 +84,75 @@ pub fn derive_pallas_generator(label: &[u8]) -> PallasPoint {
     PallasPoint::generator_mul(PallasScalar::from_uniform_bytes(&uniform))
 }
 
+/// Public commitment emitted by the Pallas mask constraint layer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PallasMaskConstraintCommitment {
+    /// Commitment to the mask witness variable.
+    pub mask_variable: PallasPoint,
+}
+
+/// Executable Pallas mask-relation constraints.
+///
+/// This layer checks the public part of Golden's mask relation:
+/// `mask = H(shared_point, transcript)` and
+/// `mask_commitment = mask * Pallas::generator()`. It also commits the mask
+/// variable against backend-specific Pallas generators. The current proof opens
+/// that commitment directly; a real Bulletproofs backend will replace that
+/// opening with a zero-knowledge proof.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PallasMaskConstraints;
+
+impl PallasMaskConstraints {
+    /// Check the public mask relation and return the expected mask.
+    pub fn verify_public_relation(
+        public_inputs: &ProofPublicInputs,
+    ) -> Result<PallasScalar, ProofError> {
+        let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
+        if public_inputs.mask != mask {
+            return Err(ProofError::InvalidProof);
+        }
+
+        if public_inputs.mask_commitment != PallasPoint::generator_mul(mask) {
+            return Err(ProofError::InvalidProof);
+        }
+
+        Ok(mask)
+    }
+
+    /// Commit to the mask variable with backend-specific Pallas generators.
+    #[must_use]
+    pub fn commit_mask(
+        mask: PallasScalar,
+        blinding: PallasScalar,
+    ) -> PallasMaskConstraintCommitment {
+        let mask_generator = derive_pallas_generator(MASK_VARIABLE_GENERATOR_LABEL);
+        let blinding_generator = derive_pallas_generator(MASK_BLINDING_GENERATOR_LABEL);
+        PallasMaskConstraintCommitment {
+            mask_variable: mask_generator.mul_scalar(mask)
+                + blinding_generator.mul_scalar(blinding),
+        }
+    }
+
+    fn verify_opening(
+        public_inputs: &ProofPublicInputs,
+        constraint_commitment: PallasMaskConstraintCommitment,
+        blinding: PallasScalar,
+    ) -> Result<(), ProofError> {
+        let mask = Self::verify_public_relation(public_inputs)?;
+        if constraint_commitment != Self::commit_mask(mask, blinding) {
+            return Err(ProofError::InvalidProof);
+        }
+
+        Ok(())
+    }
+}
+
 /// Feature-gated non-zero-knowledge Pallas proof backend skeleton.
 ///
-/// This backend is useful for stabilizing transcript domains and proof framing
-/// before the R1CS constraints land. It validates the same public/witness
-/// consistency as the fixture backend and emits deterministic proof bytes.
+/// This backend is useful for stabilizing transcript domains, proof framing, and
+/// mask-relation constraint checks before the R1CS constraints land. It
+/// validates the same public/witness consistency as the fixture backend and
+/// emits deterministic proof bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PallasProofSkeleton;
 
@@ -86,9 +162,11 @@ impl ProofSystem for PallasProofSkeleton {
         witness: &ProofWitness,
     ) -> Result<MaskProof, ProofError> {
         validate_witness(public_inputs, witness)?;
+        PallasMaskConstraints::verify_public_relation(public_inputs)
+            .map_err(|_| ProofError::InvalidWitness)?;
         Ok(MaskProof {
             backend: BACKEND,
-            bytes: encode_skeleton_proof(public_inputs),
+            bytes: encode_skeleton_proof(public_inputs, witness),
         })
     }
 
@@ -98,13 +176,24 @@ impl ProofSystem for PallasProofSkeleton {
         }
 
         let decoded = decode_skeleton_proof(&proof.bytes)?;
-        let challenge = PallasProofTranscript::challenge_scalar(b"mask-proof", public_inputs);
-        let digest = PallasProofTranscript::proof_digest(public_inputs, challenge);
+        PallasMaskConstraints::verify_opening(
+            public_inputs,
+            decoded.constraint_commitment,
+            decoded.mask_blinding,
+        )?;
+        let challenge =
+            PallasProofTranscript::proof_challenge(public_inputs, decoded.constraint_commitment);
+        let constraint_digest = constraint_digest(
+            public_inputs,
+            decoded.constraint_commitment,
+            decoded.mask_blinding,
+            challenge,
+        )?;
 
-        if decoded.challenge == challenge && decoded.digest == digest {
-            Ok(())
-        } else {
+        if decoded.challenge != challenge || decoded.constraint_digest != constraint_digest {
             Err(ProofError::InvalidProof)
+        } else {
+            Ok(())
         }
     }
 
@@ -119,18 +208,30 @@ impl ProofSystem for PallasProofSkeleton {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SkeletonProof {
     challenge: PallasScalar,
-    digest: [u8; 32],
+    constraint_commitment: PallasMaskConstraintCommitment,
+    mask_blinding: PallasScalar,
+    constraint_digest: [u8; 32],
 }
 
-fn encode_skeleton_proof(public_inputs: &ProofPublicInputs) -> Vec<u8> {
-    let challenge = PallasProofTranscript::challenge_scalar(b"mask-proof", public_inputs);
-    let digest = PallasProofTranscript::proof_digest(public_inputs, challenge);
+fn encode_skeleton_proof(public_inputs: &ProofPublicInputs, witness: &ProofWitness) -> Vec<u8> {
+    let mask_blinding = derive_mask_blinding(public_inputs, witness);
+    let constraint_commitment = PallasMaskConstraints::commit_mask(witness.mask, mask_blinding);
+    let challenge = PallasProofTranscript::proof_challenge(public_inputs, constraint_commitment);
+    let constraint_digest = constraint_digest(
+        public_inputs,
+        constraint_commitment,
+        mask_blinding,
+        challenge,
+    )
+    .expect("validated proof inputs");
 
     let mut bytes = Vec::with_capacity(PROOF_LEN);
     bytes.extend_from_slice(PROOF_MAGIC);
     bytes.push(PROOF_VERSION);
     bytes.extend_from_slice(&challenge.to_bytes());
-    bytes.extend_from_slice(&digest);
+    bytes.extend_from_slice(&constraint_commitment.mask_variable.to_bytes());
+    bytes.extend_from_slice(&mask_blinding.to_bytes());
+    bytes.extend_from_slice(&constraint_digest);
     bytes
 }
 
@@ -144,13 +245,64 @@ fn decode_skeleton_proof(bytes: &[u8]) -> Result<SkeletonProof, ProofError> {
     }
 
     let mut challenge_bytes = [0_u8; 32];
-    challenge_bytes.copy_from_slice(&bytes[5..37]);
+    challenge_bytes.copy_from_slice(&bytes[CHALLENGE_OFFSET..MASK_COMMITMENT_OFFSET]);
     let challenge = PallasScalar::from_bytes(challenge_bytes).ok_or(ProofError::InvalidProof)?;
 
-    let mut digest = [0_u8; 32];
-    digest.copy_from_slice(&bytes[37..69]);
+    let mut commitment_bytes = [0_u8; 32];
+    commitment_bytes.copy_from_slice(&bytes[MASK_COMMITMENT_OFFSET..MASK_BLINDING_OFFSET]);
+    let constraint_commitment = PallasMaskConstraintCommitment {
+        mask_variable: PallasPoint::from_bytes(commitment_bytes).ok_or(ProofError::InvalidProof)?,
+    };
 
-    Ok(SkeletonProof { challenge, digest })
+    let mut blinding_bytes = [0_u8; 32];
+    blinding_bytes.copy_from_slice(&bytes[MASK_BLINDING_OFFSET..CONSTRAINT_DIGEST_OFFSET]);
+    let mask_blinding = PallasScalar::from_bytes(blinding_bytes).ok_or(ProofError::InvalidProof)?;
+
+    let mut constraint_digest = [0_u8; 32];
+    constraint_digest.copy_from_slice(&bytes[CONSTRAINT_DIGEST_OFFSET..PROOF_LEN]);
+
+    Ok(SkeletonProof {
+        challenge,
+        constraint_commitment,
+        mask_blinding,
+        constraint_digest,
+    })
+}
+
+fn derive_mask_blinding(public_inputs: &ProofPublicInputs, witness: &ProofWitness) -> PallasScalar {
+    let mut state = Params::new().hash_length(64).to_state();
+    state.update(MASK_BLINDING_DOMAIN);
+    update_public_inputs(&mut state, public_inputs);
+    state.update(&witness.dealer_secret.to_bytes());
+    state.update(&witness.shared_point.to_bytes());
+    state.update(&witness.mask.to_bytes());
+
+    let hash = state.finalize();
+    let mut uniform = [0_u8; 64];
+    uniform.copy_from_slice(hash.as_bytes());
+    PallasScalar::from_uniform_bytes(&uniform)
+}
+
+fn constraint_digest(
+    public_inputs: &ProofPublicInputs,
+    constraint_commitment: PallasMaskConstraintCommitment,
+    mask_blinding: PallasScalar,
+    challenge: PallasScalar,
+) -> Result<[u8; 32], ProofError> {
+    let mask = PallasMaskConstraints::verify_public_relation(public_inputs)?;
+    let mut state = Params::new().hash_length(32).to_state();
+    state.update(CONSTRAINT_DOMAIN);
+    update_public_inputs(&mut state, public_inputs);
+    state.update(&constraint_commitment.mask_variable.to_bytes());
+    state.update(&mask_blinding.to_bytes());
+    state.update(&challenge.to_bytes());
+    state.update(&mask.to_bytes());
+    state.update(&PallasPoint::generator_mul(mask).to_bytes());
+
+    let hash = state.finalize();
+    let mut digest = [0_u8; 32];
+    digest.copy_from_slice(hash.as_bytes());
+    Ok(digest)
 }
 
 fn update_public_inputs(state: &mut State, public_inputs: &ProofPublicInputs) {
@@ -174,7 +326,8 @@ mod tests {
     };
 
     use super::{
-        PallasProofSkeleton, PallasProofTranscript, decode_skeleton_proof, derive_pallas_generator,
+        MASK_BLINDING_OFFSET, MASK_COMMITMENT_OFFSET, PallasMaskConstraints, PallasProofSkeleton,
+        PallasProofTranscript, decode_skeleton_proof, derive_pallas_generator,
     };
     use crate::{ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
@@ -270,6 +423,48 @@ mod tests {
     }
 
     #[test]
+    fn mask_constraints_accept_valid_public_relation() {
+        let (public_inputs, _) = valid_case();
+
+        assert_eq!(
+            PallasMaskConstraints::verify_public_relation(&public_inputs),
+            Ok(public_inputs.mask)
+        );
+    }
+
+    #[test]
+    fn mask_constraints_reject_wrong_public_mask() {
+        let (mut public_inputs, _) = valid_case();
+        public_inputs.mask += PallasScalar::ONE;
+
+        assert_eq!(
+            PallasMaskConstraints::verify_public_relation(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_constraints_reject_wrong_public_mask_commitment() {
+        let (mut public_inputs, _) = valid_case();
+        public_inputs.mask_commitment += PallasPoint::generator();
+
+        assert_eq!(
+            PallasMaskConstraints::verify_public_relation(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_constraint_commitment_is_blinding_sensitive() {
+        let (public_inputs, _) = valid_case();
+
+        assert_ne!(
+            PallasMaskConstraints::commit_mask(public_inputs.mask, PallasScalar::from_u64(1)),
+            PallasMaskConstraints::commit_mask(public_inputs.mask, PallasScalar::from_u64(2))
+        );
+    }
+
+    #[test]
     fn skeleton_backend_proves_and_verifies_valid_inputs() {
         let (public_inputs, witness) = valid_case();
         let proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
@@ -295,6 +490,30 @@ mod tests {
         let (public_inputs, witness) = valid_case();
         let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
         proof.bytes[5] ^= 1;
+
+        assert_eq!(
+            PallasProofSkeleton::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn skeleton_rejects_tampered_constraint_commitment() {
+        let (public_inputs, witness) = valid_case();
+        let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
+        proof.bytes[MASK_COMMITMENT_OFFSET] ^= 1;
+
+        assert_eq!(
+            PallasProofSkeleton::verify(&public_inputs, &proof),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn skeleton_rejects_tampered_constraint_blinding() {
+        let (public_inputs, witness) = valid_case();
+        let mut proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
+        proof.bytes[MASK_BLINDING_OFFSET] ^= 1;
 
         assert_eq!(
             PallasProofSkeleton::verify(&public_inputs, &proof),
