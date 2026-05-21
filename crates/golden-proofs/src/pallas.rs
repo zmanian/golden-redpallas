@@ -123,12 +123,68 @@ impl PallasMaskHashTrace {
 
     /// Validate this trace against the public inputs.
     pub fn verify(self, public_inputs: &ProofPublicInputs) -> Result<PallasScalar, ProofError> {
-        let transcript = public_inputs.mask_transcript();
-        if self.shared_point != public_inputs.shared_point.point().to_bytes() {
+        PallasMaskHashConstraintTrace::from_trace(self).verify(public_inputs)
+    }
+
+    fn update_transcript(self, state: &mut State) {
+        state.update(&self.shared_point);
+        state.update(&self.transcript_digest);
+        state.update(&self.mask_digest);
+        state.update(&self.mask.to_bytes());
+    }
+}
+
+/// Constraint-oriented byte-limb view of the mask hash trace.
+///
+/// Limbs are represented as `u16` so tests and future parsers can detect
+/// out-of-range byte witnesses before lowering them into field constraints.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PallasMaskHashConstraintTrace {
+    /// Domain separator bytes for mask hash-to-field.
+    pub domain_limbs: Vec<u16>,
+    /// Encoded shared Vesta point limbs.
+    pub shared_point_limbs: Vec<u16>,
+    /// Digest limbs for the DKG mask transcript.
+    pub transcript_digest_limbs: Vec<u16>,
+    /// Raw 64-byte hash output limbs.
+    pub mask_digest_limbs: Vec<u16>,
+    /// Canonical Pallas mask encoding limbs.
+    pub mask_limbs: Vec<u16>,
+}
+
+impl PallasMaskHashConstraintTrace {
+    /// Convert a deterministic hash trace into constraint rows.
+    #[must_use]
+    pub fn from_trace(trace: PallasMaskHashTrace) -> Self {
+        Self {
+            domain_limbs: bytes_to_limbs(domains::MASK_TO_FIELD),
+            shared_point_limbs: bytes_to_limbs(&trace.shared_point),
+            transcript_digest_limbs: bytes_to_limbs(&trace.transcript_digest),
+            mask_digest_limbs: bytes_to_limbs(&trace.mask_digest),
+            mask_limbs: bytes_to_limbs(&trace.mask.to_bytes()),
+        }
+    }
+
+    /// Validate limb lengths, byte ranges, canonical mask encoding, and trace
+    /// consistency against public inputs.
+    pub fn verify(&self, public_inputs: &ProofPublicInputs) -> Result<PallasScalar, ProofError> {
+        let domain = limbs_to_vec(&self.domain_limbs)?;
+        if domain.as_slice() != domains::MASK_TO_FIELD {
             return Err(ProofError::InvalidProof);
         }
 
-        if self.transcript_digest != trace_transcript_digest(&transcript) {
+        let shared_point = limbs_to_array::<32>(&self.shared_point_limbs)?;
+        let transcript_digest = limbs_to_array::<32>(&self.transcript_digest_limbs)?;
+        let mask_digest = limbs_to_array::<64>(&self.mask_digest_limbs)?;
+        let mask_bytes = limbs_to_array::<32>(&self.mask_limbs)?;
+        let mask = PallasScalar::from_bytes(mask_bytes).ok_or(ProofError::InvalidProof)?;
+
+        let transcript = public_inputs.mask_transcript();
+        if shared_point != public_inputs.shared_point.point().to_bytes() {
+            return Err(ProofError::InvalidProof);
+        }
+
+        if transcript_digest != trace_transcript_digest(&transcript) {
             return Err(ProofError::InvalidProof);
         }
 
@@ -137,27 +193,20 @@ impl PallasMaskHashTrace {
             .hash_length(64)
             .to_state()
             .update(domains::MASK_TO_FIELD)
-            .update(&self.shared_point)
+            .update(&shared_point)
             .update(&transcript)
             .finalize();
         expected_digest.copy_from_slice(hash.as_bytes());
-        if self.mask_digest != expected_digest {
+        if mask_digest != expected_digest {
             return Err(ProofError::InvalidProof);
         }
 
-        let mask = PallasScalar::from_uniform_bytes(&self.mask_digest);
-        if self.mask != mask || public_inputs.mask != mask {
+        let reduced_mask = PallasScalar::from_uniform_bytes(&mask_digest);
+        if mask != reduced_mask || public_inputs.mask != reduced_mask {
             return Err(ProofError::InvalidProof);
         }
 
-        Ok(mask)
-    }
-
-    fn update_transcript(self, state: &mut State) {
-        state.update(&self.shared_point);
-        state.update(&self.transcript_digest);
-        state.update(&self.mask_digest);
-        state.update(&self.mask.to_bytes());
+        Ok(reduced_mask)
     }
 }
 
@@ -531,6 +580,29 @@ fn trace_transcript_digest(transcript: &[u8]) -> [u8; 32] {
     digest
 }
 
+fn bytes_to_limbs(bytes: &[u8]) -> Vec<u16> {
+    bytes.iter().map(|byte| u16::from(*byte)).collect()
+}
+
+fn limbs_to_vec(limbs: &[u16]) -> Result<Vec<u8>, ProofError> {
+    limbs
+        .iter()
+        .map(|limb| u8::try_from(*limb).map_err(|_| ProofError::InvalidProof))
+        .collect()
+}
+
+fn limbs_to_array<const N: usize>(limbs: &[u16]) -> Result<[u8; N], ProofError> {
+    if limbs.len() != N {
+        return Err(ProofError::InvalidProof);
+    }
+
+    let mut bytes = [0_u8; N];
+    for (index, limb) in limbs.iter().enumerate() {
+        bytes[index] = u8::try_from(*limb).map_err(|_| ProofError::InvalidProof)?;
+    }
+    Ok(bytes)
+}
+
 fn update_public_inputs(state: &mut State, public_inputs: &ProofPublicInputs) {
     state.update(&public_inputs.mask_transcript());
     state.update(&public_inputs.shared_point.point().to_bytes());
@@ -553,9 +625,10 @@ mod tests {
 
     use super::{
         MASK_COMMITMENT_OFFSET, OPENING_NONCE_COMMITMENT_OFFSET, OPENING_RESPONSE_OFFSET,
-        PallasMaskConstraints, PallasMaskHashTrace, PallasProofSkeleton, PallasProofTranscript,
-        TRACE_MASK_DIGEST_OFFSET, TRACE_MASK_OFFSET, TRACE_SHARED_POINT_OFFSET,
-        TRACE_TRANSCRIPT_DIGEST_OFFSET, decode_skeleton_proof, derive_pallas_generator,
+        PallasMaskConstraints, PallasMaskHashConstraintTrace, PallasMaskHashTrace,
+        PallasProofSkeleton, PallasProofTranscript, TRACE_MASK_DIGEST_OFFSET, TRACE_MASK_OFFSET,
+        TRACE_SHARED_POINT_OFFSET, TRACE_TRANSCRIPT_DIGEST_OFFSET, decode_skeleton_proof,
+        derive_pallas_generator,
     };
     use crate::{ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
 
@@ -667,6 +740,70 @@ mod tests {
         let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
 
         assert_eq!(mask_trace.verify(&public_inputs), Ok(public_inputs.mask));
+    }
+
+    #[test]
+    fn mask_hash_constraint_trace_accepts_valid_limbs() {
+        let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        let constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
+
+        assert_eq!(
+            constraint_trace.verify(&public_inputs),
+            Ok(public_inputs.mask)
+        );
+    }
+
+    #[test]
+    fn mask_hash_constraint_trace_rejects_malformed_limb_length() {
+        let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
+        constraint_trace.mask_digest_limbs.pop();
+
+        assert_eq!(
+            constraint_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_hash_constraint_trace_rejects_out_of_range_limb() {
+        let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
+        constraint_trace.mask_digest_limbs[0] = 256;
+
+        assert_eq!(
+            constraint_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_hash_constraint_trace_rejects_non_canonical_mask_encoding() {
+        let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
+        constraint_trace.mask_limbs = vec![255; 32];
+
+        assert_eq!(
+            constraint_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn mask_hash_constraint_trace_rejects_altered_digest_limb() {
+        let (public_inputs, _) = valid_case();
+        let mask_trace = PallasMaskHashTrace::from_public_inputs(&public_inputs);
+        let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
+        constraint_trace.mask_digest_limbs[0] ^= 1;
+
+        assert_eq!(
+            constraint_trace.verify(&public_inputs),
+            Err(ProofError::InvalidProof)
+        );
     }
 
     #[test]

@@ -15,8 +15,9 @@ pub use dkg::{ProofedDkgSimulation, ProofedTranscript, recover_with_proofs};
 pub use fixture::FixtureProofSystem;
 #[cfg(feature = "pallas-backend")]
 pub use pallas::{
-    PallasMaskConstraintCommitment, PallasMaskConstraints, PallasMaskHashTrace,
-    PallasMaskOpeningProof, PallasProofSkeleton, PallasProofTranscript, derive_pallas_generator,
+    PallasMaskConstraintCommitment, PallasMaskConstraints, PallasMaskHashConstraintTrace,
+    PallasMaskHashTrace, PallasMaskOpeningProof, PallasProofSkeleton, PallasProofTranscript,
+    derive_pallas_generator,
 };
 pub use types::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
