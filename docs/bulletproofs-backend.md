@@ -6,11 +6,14 @@ non-zero-knowledge fixture backend for integration tests.
 
 ## Current Decision
 
+Build a dedicated Pallas-field proof backend behind `ProofSystem`; see
+[`adr/0001-pallas-bulletproofs-backend.md`](adr/0001-pallas-bulletproofs-backend.md).
+
 Do not build the Golden eVRF circuit directly on the public Rust `bulletproofs`
-crate yet. The available crate is tied to `curve25519-dalek`/Ristretto types, and
-its R1CS API is documented as experimental. Golden for `RedPallas` needs a proof
-system over the Pallas scalar field with generators and transcript binding that
-match the Pasta-cycle implementation.
+crate. Current crate metadata for `bulletproofs 5.0.0` describes it as a
+Ristretto-based Bulletproofs implementation. Golden for `RedPallas` needs a
+proof system over the Pallas scalar field with generators and transcript binding
+that match the Pasta-cycle implementation.
 
 ## Backend Requirements
 
@@ -41,7 +44,7 @@ The fixture backend currently checks:
 
 ## Next Implementation Step
 
-Add a `golden-proofs::bulletproofs` module behind a feature flag once the backend
-strategy is selected. The implementation should satisfy the same `ProofSystem`
-trait and reuse the fixture tests as behavioral tests, then add real proof
-serialization and batch verification tests.
+Add a `golden-proofs::pallas` proof backend behind a feature flag. The
+implementation should satisfy the same `ProofSystem` trait and reuse the fixture
+tests as behavioral tests, then add real proof serialization and batch
+verification tests.
