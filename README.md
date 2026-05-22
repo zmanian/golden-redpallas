@@ -34,7 +34,8 @@ cargo test --workspace
 
 ## Security Status
 
-This repository is not production ready. It contains an executable Pallas proof
-skeleton, not a production zero-knowledge proof backend, and the implementation
-has not completed an independent cryptographic audit. Do not use it with real
-keys or funds.
+This repository is not production ready. It contains an unaudited candidate
+Pallas proof backend (an IPA-based prover/verifier with circuit traces for the
+mask hash, mask opening, and Vesta DH relations) that still self-identifies as
+a skeleton and has not completed an independent cryptographic audit. Do not
+use it with real keys or funds.
