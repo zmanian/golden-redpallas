@@ -9,13 +9,25 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ark-ec = { version = "0.5", default-features = false }
+ark-ff = { version = "0.5", default-features = false }
+ark-r1cs-std = { version = "0.5", default-features = false }
+ark-relations = { version = "0.5", default-features = false }
+ark-vesta = { version = "0.5", default-features = false, features = ["r1cs"] }
 blake2b_simd = "1.0.4"
 golden-core = { path = "../golden-core" }
 golden-pallas = { path = "../golden-pallas" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rayon = "1.11"
 
 [features]
 default = []
 pallas-backend = []
+
+[[example]]
+name = "pallas_bench"
+path = "examples/pallas_bench.rs"
+required-features = ["pallas-backend"]
 
 [lints]
 workspace = true

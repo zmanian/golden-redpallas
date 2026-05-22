@@ -17,9 +17,13 @@ pub use dkg::{ProofedDkgSimulation, ProofedTranscript, recover_with_proofs};
 pub use fixture::FixtureProofSystem;
 #[cfg(feature = "pallas-backend")]
 pub use pallas::{
-    PallasMaskConstraintCommitment, PallasMaskConstraints, PallasMaskHashConstraintTrace,
-    PallasMaskHashTrace, PallasMaskOpeningProof, PallasProofSkeleton, PallasProofTranscript,
-    PallasVestaDhConstraintTrace, derive_pallas_generator,
+    PallasCircuit, PallasCircuitClaim, PallasCircuitProfile, PallasCircuitProof,
+    PallasCircuitSetup, PallasCircuitWitness, PallasIpaClaim, PallasIpaProof, PallasIpaSetup,
+    PallasIpaWitness, PallasMaskConstraintCommitment, PallasMaskConstraints,
+    PallasMaskHashConstraintTrace, PallasMaskHashFieldConstraintTrace, PallasMaskHashTrace,
+    PallasMaskOpeningProof, PallasProofCircuitProfile, PallasProofSkeleton, PallasProofTranscript,
+    PallasR1cs, PallasSparseMatrix, PallasVestaDhConstraintTrace,
+    PallasVestaDhFieldConstraintTrace, derive_pallas_generator,
 };
 pub use types::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,

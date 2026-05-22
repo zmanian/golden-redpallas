@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 frost-redpallas = { path = "../frost-redpallas" }
+golden-core = { path = "../golden-core" }
 golden-pallas = { path = "../golden-pallas" }
 
 [lints]

@@ -1,26 +1,103 @@
 //! Dealer transcript types and validation.
 
 use crate::FieldElement;
+use core::num::NonZeroU16;
 
-/// A non-zero participant identifier.
+/// Highest participant index accepted by the FROST APIs used by `RedPallas`.
+pub const MAX_FROST_PARTICIPANT_ID: u64 = 65_535;
+
+/// A non-zero participant identifier compatible with FROST identifier indexes.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ParticipantId(u64);
+pub struct ParticipantId(NonZeroU16);
 
 impl ParticipantId {
     /// Construct a participant identifier.
     #[must_use]
     pub fn new(value: u64) -> Option<Self> {
-        (value != 0).then_some(Self(value))
+        Self::try_from(value).ok()
     }
 
-    /// Return the integer representation.
+    /// Return the integer representation used for Shamir evaluation points.
     #[must_use]
     pub fn get(self) -> u64 {
-        self.0
+        u64::from(self.0.get())
+    }
+
+    /// Return the FROST-compatible identifier index.
+    #[must_use]
+    pub const fn as_u16(self) -> u16 {
+        self.0.get()
     }
 }
 
-/// A public polynomial commitment placeholder.
+impl TryFrom<u16> for ParticipantId {
+    type Error = ParticipantIdError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        NonZeroU16::new(value)
+            .map(Self)
+            .ok_or(ParticipantIdError::Zero)
+    }
+}
+
+impl TryFrom<u64> for ParticipantId {
+    type Error = ParticipantIdError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        if value == 0 {
+            return Err(ParticipantIdError::Zero);
+        }
+
+        let value = u16::try_from(value).map_err(|_| ParticipantIdError::OutOfRange)?;
+        Self::try_from(value)
+    }
+}
+
+impl From<ParticipantId> for u16 {
+    fn from(value: ParticipantId) -> Self {
+        value.as_u16()
+    }
+}
+
+/// Participant identifier construction failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParticipantIdError {
+    /// FROST identifiers are non-zero.
+    Zero,
+    /// FROST identifier indexes are represented as `u16` values.
+    OutOfRange,
+}
+
+#[cfg(test)]
+mod participant_id_tests {
+    use super::{ParticipantId, ParticipantIdError};
+
+    #[test]
+    fn rejects_zero_and_values_outside_frost_identifier_range() {
+        assert_eq!(ParticipantId::new(0), None);
+        assert_eq!(ParticipantId::new(u64::from(u16::MAX) + 1), None);
+    }
+
+    #[test]
+    fn exposes_frost_identifier_index_without_ambiguity() {
+        let participant = ParticipantId::new(u64::from(u16::MAX)).expect("max FROST id");
+
+        assert_eq!(participant.get(), u64::from(u16::MAX));
+        assert_eq!(participant.as_u16(), u16::MAX);
+        assert_eq!(u16::from(participant), u16::MAX);
+        assert_eq!(ParticipantId::try_from(u16::MAX), Ok(participant));
+        assert_eq!(
+            ParticipantId::try_from(0_u16),
+            Err(ParticipantIdError::Zero)
+        );
+        assert_eq!(
+            ParticipantId::try_from(u64::from(u16::MAX) + 1),
+            Err(ParticipantIdError::OutOfRange)
+        );
+    }
+}
+
+/// Public commitments to a dealer polynomial.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicPolynomial<C> {
     /// Commitments to coefficients of the dealer polynomial.

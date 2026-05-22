@@ -1,6 +1,6 @@
 //! Shared public/witness consistency checks.
 
-use golden_pallas::{PallasPoint, VestaPoint, derive_mask};
+use golden_pallas::{PallasPoint, SharedSecret, VestaPoint, derive_mask};
 
 use crate::{ProofError, ProofPublicInputs, ProofWitness};
 
@@ -22,12 +22,11 @@ pub(crate) fn validate_witness(
         return Err(ProofError::InvalidWitness);
     }
 
-    if public_inputs.shared_point.point() != witness.shared_point {
-        return Err(ProofError::InvalidWitness);
-    }
-
-    let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
-    if public_inputs.mask != mask || witness.mask != mask {
+    let mask = derive_mask(
+        SharedSecret::from_point(witness.shared_point),
+        &public_inputs.mask_transcript(),
+    );
+    if witness.mask != mask {
         return Err(ProofError::InvalidWitness);
     }
 

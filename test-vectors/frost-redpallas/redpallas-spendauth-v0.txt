@@ -1,0 +1,23 @@
+# RedPallas SpendAuth signature vector v0
+
+Generated with the `reddsa` crate's `orchard::SpendAuth` implementation and a
+deterministic test RNG. This vector exercises Zcash-compatible RedPallas
+verification at the adapter boundary.
+
+message = "Golden RedPallas SpendAuth vector v0"
+public_key = [
+  90, 0, 54, 84, 0, 51, 106, 127,
+  128, 4, 96, 161, 208, 107, 40, 99,
+  239, 165, 172, 159, 0, 5, 243, 95,
+  142, 15, 226, 184, 155, 81, 251, 187,
+]
+signature = [
+  20, 188, 182, 12, 113, 64, 187, 78,
+  193, 31, 154, 37, 118, 249, 13, 237,
+  88, 155, 173, 25, 165, 15, 224, 181,
+  118, 77, 7, 12, 40, 13, 138, 23,
+  253, 73, 164, 188, 38, 177, 17, 79,
+  132, 236, 84, 78, 26, 112, 134, 227,
+  7, 234, 29, 243, 178, 136, 187, 155,
+  230, 14, 15, 21, 96, 251, 240, 63,
+]

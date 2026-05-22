@@ -7,8 +7,8 @@ use golden_core::{
     VerificationError, recover_share, verify_transcript,
 };
 use golden_pallas::{
-    DkgFixture, DkgSimulation, PallasPoint, PallasScalar, SharedSecret, SimulationDealer,
-    SimulationError, SimulationParticipant, derive_mask, verify_masked_share_commitment,
+    DkgFixture, DkgSimulation, PallasPoint, PallasScalar, SimulationDealer, SimulationError,
+    SimulationParticipant, derive_mask, verify_masked_share_commitment,
 };
 
 use crate::{MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness};
@@ -43,7 +43,7 @@ pub struct ProofedDkgSimulation<P> {
     proof_system: PhantomData<P>,
 }
 
-/// Proof-aware DKG simulation using the feature-gated Pallas backend skeleton.
+/// Proof-aware DKG simulation using the feature-gated Pallas backend candidate.
 #[cfg(feature = "pallas-backend")]
 pub type PallasProofedDkgSimulation = ProofedDkgSimulation<crate::PallasProofSkeleton>;
 
@@ -123,7 +123,10 @@ pub fn recover_with_proofs<P: ProofSystem>(
             participant,
             masked_share.mask_commitment,
         );
-        value += recover_share(masked_share.value, public_inputs.mask);
+        value += recover_share(
+            masked_share.value,
+            participant_mask(&public_inputs, participant),
+        );
     }
 
     Ok(AggregatedShare {
@@ -152,8 +155,8 @@ fn proof_transcript<P: ProofSystem>(
             );
             let witness = ProofWitness {
                 dealer_secret: dealer.helper_secret.scalar(),
-                shared_point: public_inputs.shared_point.point(),
-                mask: public_inputs.mask,
+                shared_point: dealer_shared_point(dealer, participant),
+                mask: dealer_mask(&public_inputs, dealer, participant),
             };
             let proof =
                 P::prove(&public_inputs, &witness).map_err(|source| ProofedDkgError::Proof {
@@ -252,24 +255,50 @@ fn proof_public_inputs(
 ) -> ProofPublicInputs {
     let dealer_public = dealer.helper_public();
     let participant_public = participant.helper_public();
-    let shared_point = SharedSecret::from_point(
-        participant_public
-            .point()
-            .mul_scalar(dealer.helper_secret.scalar()),
-    );
-    let mut public_inputs = ProofPublicInputs {
+    ProofPublicInputs {
         session_id: simulation.session_id.clone(),
         dealer_id: transcript.dealer,
         participant_id: participant.id,
         dealer_public,
         participant_public,
-        shared_point,
-        mask: PallasScalar::ZERO,
         mask_commitment,
         public_polynomial: transcript.public_polynomial.clone(),
-    };
-    public_inputs.mask = derive_mask(shared_point, &public_inputs.mask_transcript());
-    public_inputs
+    }
+}
+
+fn dealer_shared_point(
+    dealer: &SimulationDealer,
+    participant: SimulationParticipant,
+) -> golden_pallas::VestaPoint {
+    participant
+        .helper_public()
+        .point()
+        .mul_scalar(dealer.helper_secret.scalar())
+}
+
+fn dealer_mask(
+    public_inputs: &ProofPublicInputs,
+    dealer: &SimulationDealer,
+    participant: SimulationParticipant,
+) -> PallasScalar {
+    derive_mask(
+        dealer
+            .helper_secret
+            .diffie_hellman(participant.helper_public()),
+        &public_inputs.mask_transcript(),
+    )
+}
+
+fn participant_mask(
+    public_inputs: &ProofPublicInputs,
+    participant: SimulationParticipant,
+) -> PallasScalar {
+    derive_mask(
+        participant
+            .helper_secret
+            .diffie_hellman(public_inputs.dealer_public),
+        &public_inputs.mask_transcript(),
+    )
 }
 
 fn find_participant(
@@ -356,8 +385,10 @@ impl From<AggregationError> for ProofedDkgError {
 
 #[cfg(test)]
 mod tests {
-    use golden_core::{AggregationError, FieldElement, interpolate_at_zero};
+    use golden_core::{AggregationError, FieldElement, VerificationError, interpolate_at_zero};
     use golden_pallas::{DkgFixture, PallasPoint, PallasScalar};
+    #[cfg(feature = "pallas-backend")]
+    use golden_pallas::{SimulationDealer, SimulationParticipant};
 
     use crate::{FixtureProofSystem, ProofError};
     #[cfg(feature = "pallas-backend")]
@@ -398,6 +429,7 @@ mod tests {
 
     #[cfg(feature = "pallas-backend")]
     #[test]
+    #[ignore = "full Pallas skeleton proof generation is expensive with the Blake2b circuit"]
     fn pallas_backend_recovers_all_participant_shares() {
         let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
         let proofed = PallasProofedDkgSimulation::from_fixture(&fixture).expect("proofed");
@@ -427,6 +459,48 @@ mod tests {
 
     #[cfg(feature = "pallas-backend")]
     #[test]
+    #[cfg_attr(
+        debug_assertions,
+        ignore = "full Pallas skeleton proof generation is expensive in debug builds"
+    )]
+    fn pallas_backend_smoke_recovers_and_rejects_tampered_proof() {
+        let fixture = minimal_pallas_fixture();
+        let proofed = PallasProofedDkgSimulation::from_fixture(&fixture).expect("proofed");
+        let participant = proofed.simulation.participants[0].id;
+        let aggregate_secret = proofed.simulation.aggregate_secret().expect("secret");
+
+        assert_eq!(
+            proofed.aggregate_public_key(),
+            Ok(PallasPoint::generator_mul(aggregate_secret))
+        );
+        assert_eq!(
+            proofed
+                .recover_participant(participant)
+                .map(|share| share.value),
+            Ok(aggregate_secret)
+        );
+
+        let mut proofed_transcripts = proofed.proofed_transcripts.clone();
+        let proof = &mut proofed_transcripts[0].proofs[0].proof;
+        let last = proof.bytes.len() - 1;
+        proof.bytes[last] ^= 1;
+
+        assert!(matches!(
+            recover_with_proofs::<PallasProofSkeleton>(
+                &proofed.simulation,
+                participant,
+                &proofed_transcripts,
+            ),
+            Err(ProofedDkgError::BatchProof {
+                source: ProofError::InvalidProof,
+                ..
+            })
+        ));
+    }
+
+    #[cfg(feature = "pallas-backend")]
+    #[test]
+    #[ignore = "full Pallas skeleton proof generation is expensive with the Blake2b circuit"]
     fn pallas_backend_rejects_tampered_proof_in_dkg_recovery() {
         let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
         let proofed = PallasProofedDkgSimulation::from_fixture(&fixture).expect("proofed");
@@ -447,6 +521,18 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[cfg(feature = "pallas-backend")]
+    fn minimal_pallas_fixture() -> DkgFixture {
+        DkgFixture {
+            threshold: 1,
+            session_id: b"golden-pallas-proofed-dkg-smoke-v0".to_vec(),
+            participants: vec![
+                SimulationParticipant::from_u64(1, 31).expect("participant id is valid"),
+            ],
+            dealers: vec![SimulationDealer::from_u64(10, 13, &[5]).expect("dealer id is valid")],
+        }
     }
 
     #[test]
@@ -526,5 +612,78 @@ mod tests {
                 AggregationError::InsufficientDealers
             ))
         );
+    }
+
+    #[test]
+    fn proofed_recovery_rejects_duplicate_masked_share_participant() {
+        let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
+        let proofed =
+            ProofedDkgSimulation::<FixtureProofSystem>::from_fixture(&fixture).expect("proofed");
+        let participant = proofed.simulation.participants[0].id;
+        let mut proofed_transcripts = proofed.proofed_transcripts.clone();
+        proofed_transcripts[0].transcript.masked_shares[1].participant =
+            proofed_transcripts[0].transcript.masked_shares[0].participant;
+
+        assert!(matches!(
+            recover_with_proofs::<FixtureProofSystem>(
+                &proofed.simulation,
+                participant,
+                &proofed_transcripts,
+            ),
+            Err(ProofedDkgError::Transcript {
+                source: VerificationError::DuplicateParticipant,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn proofed_recovery_rejects_missing_masked_share_for_target() {
+        let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
+        let proofed =
+            ProofedDkgSimulation::<FixtureProofSystem>::from_fixture(&fixture).expect("proofed");
+        let participant = proofed.simulation.participants[0].id;
+        let mut proofed_transcripts = proofed.proofed_transcripts.clone();
+        proofed_transcripts[0]
+            .transcript
+            .masked_shares
+            .retain(|share| share.participant != participant);
+
+        assert_eq!(
+            recover_with_proofs::<FixtureProofSystem>(
+                &proofed.simulation,
+                participant,
+                &proofed_transcripts,
+            ),
+            Err(ProofedDkgError::Aggregation(AggregationError::MissingShare))
+        );
+    }
+
+    #[test]
+    fn proofed_recovery_rejects_broken_masked_share_commitment_equation() {
+        let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
+        let proofed =
+            ProofedDkgSimulation::<FixtureProofSystem>::from_fixture(&fixture).expect("proofed");
+        let participant = proofed.simulation.participants[0].id;
+        let mut proofed_transcripts = proofed.proofed_transcripts.clone();
+        let masked_share = proofed_transcripts[0]
+            .transcript
+            .masked_shares
+            .iter_mut()
+            .find(|share| share.participant == participant)
+            .expect("target share");
+        masked_share.value += PallasScalar::ONE;
+
+        assert!(matches!(
+            recover_with_proofs::<FixtureProofSystem>(
+                &proofed.simulation,
+                participant,
+                &proofed_transcripts,
+            ),
+            Err(ProofedDkgError::Transcript {
+                source: VerificationError::CommitmentEquationFailed,
+                ..
+            })
+        ));
     }
 }

@@ -564,4 +564,23 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn transcript_parser_fuzz_corpus_does_not_panic() {
+        let corpus = [
+            "",
+            "version=0\nthreshold=2\n",
+            "version=1\nthreshold=2\nsession=x\nparticipants=1:2\ndealers=3/4:5\n",
+            "version=0\nthreshold=x\nsession=x\nparticipants=1:2\ndealers=3/4:5\n",
+            "version=0\nthreshold=2\nsession=x\nparticipants=0:2\ndealers=3/4:5\n",
+            "version=0\nthreshold=2\nsession=x\nparticipants=1:2;1:3\ndealers=3/4:5,6\n",
+            "version=0\nthreshold=2\nsession=x\nparticipants=1:2;2:3\ndealers=3/4:\n",
+            "version=0\nthreshold=2\nsession=x\nparticipants=1:2;2:3\ndealers=3/4:5,6;3/4:7,8\n",
+            DKG_VECTOR_V0,
+        ];
+
+        for input in corpus {
+            let _ = DkgFixture::parse(input).and_then(|fixture| fixture.run());
+        }
+    }
 }

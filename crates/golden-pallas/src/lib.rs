@@ -1,9 +1,8 @@
 //! Pallas/Vesta bindings for Golden.
 //!
 //! This crate binds the protocol-independent `golden-core` APIs to the Pasta
-//! curve cycle used by Zcash Orchard. The proof system and eVRF are still
-//! separate workstreams; this crate currently provides concrete scalar, group,
-//! and commitment-equation operations.
+//! curve cycle used by Zcash Orchard. This crate provides concrete scalar,
+//! group, eVRF mask, transcript fixture, and commitment-equation operations.
 
 mod evrf;
 mod pallas_types;
@@ -38,7 +37,7 @@ pub mod domains {
     pub const DKG_MASK_TRANSCRIPT: &[u8] = b"GoldenRedPallas/DKGMaskTranscript/v0";
 }
 
-/// Unimplemented Pallas/Vesta eVRF marker.
+/// Pallas/Vesta eVRF status marker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PallasVestaEvrf;
 
@@ -46,6 +45,6 @@ impl PallasVestaEvrf {
     /// Return the current implementation status.
     #[must_use]
     pub const fn status() -> &'static str {
-        "not implemented: eVRF mask derivation and Bulletproofs backend are pending"
+        "Pallas/Vesta masks and deterministic DKG fixtures are implemented; production proof audit is pending"
     }
 }

@@ -1,0 +1,4 @@
+n,threshold,dealers,proofs,prove_micros,verify_one_micros,verify_all_micros
+8,5,8,64,2439489,228256,1824238
+16,9,16,256,10272018,505830,8094727
+32,17,32,1024,45805250,1204154,38854674

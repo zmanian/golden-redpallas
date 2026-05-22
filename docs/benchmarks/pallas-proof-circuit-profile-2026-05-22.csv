@@ -1,0 +1,3 @@
+scenario,circuit,committed_vars,internal_vars,constraints,columns,padded_vars,ipa_log_len,total_constraints
+single-proof,mask,3,100726,152298,302182,131072,17,160959
+single-proof,vesta-dh,2,5772,8661,17319,8192,13,160959

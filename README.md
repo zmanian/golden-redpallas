@@ -9,11 +9,15 @@ flow instead of unaudited cryptographic shortcuts. The current code implements:
 - finite-field abstractions used by the DKG logic;
 - Shamir polynomial evaluation and Lagrange interpolation;
 - dealer contribution creation and participant share recovery;
-- transcript verification hooks for mask proofs;
-- crate boundaries for Pallas/Vesta, Bulletproofs, FROST, and CLI integration.
+- Pallas/Vesta mask derivation and deterministic DKG fixtures;
+- proof verification hooks, fixture proofs, and a feature-gated Pallas proof
+  skeleton;
+- RedPallas FROST share/key-package helpers with even-y normalization and
+  ZIP-312 randomization support;
+- CLI commands for local session creation, posting, verification, and share
+  recovery.
 
-The Pallas/Vesta eVRF, Bulletproofs circuit, and RedPallas FROST ciphersuite are
-tracked as explicit work items in [`docs/roadmap.md`](docs/roadmap.md).
+Open work is tracked in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Workspace
 
@@ -30,6 +34,7 @@ cargo test --workspace
 
 ## Security Status
 
-This repository is not production ready. The cryptographic proof system and
-RedPallas/FROST integration are not implemented yet and must be audited before use
-with real keys or funds.
+This repository is not production ready. It contains an executable Pallas proof
+skeleton, not a production zero-knowledge proof backend, and the implementation
+has not completed an independent cryptographic audit. Do not use it with real
+keys or funds.

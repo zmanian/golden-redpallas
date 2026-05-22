@@ -4,6 +4,7 @@ use core::ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign};
 
 use golden_core::{FieldElement, MaskedShare, ParticipantId, Polynomial, PublicPolynomial};
 use pasta_curves::{
+    arithmetic::CurveExt,
     group::{
         Curve, Group, GroupEncoding,
         ff::{Field, FromUniformBytes, PrimeField},
@@ -11,6 +12,11 @@ use pasta_curves::{
     },
     pallas,
 };
+
+const ORCHARD_SPEND_AUTH_BASEPOINT_BYTES: [u8; 32] = [
+    99, 201, 117, 184, 132, 114, 26, 141, 12, 161, 112, 123, 227, 12, 127, 12, 95, 68, 95, 62, 124,
+    24, 141, 59, 6, 214, 241, 40, 179, 35, 85, 183,
+];
 
 /// Pallas scalar field element used by `RedPallas` and Golden shares.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -138,16 +144,25 @@ impl PallasPoint {
         Self(pallas::Point::identity())
     }
 
-    /// Standard Pallas generator.
+    /// Orchard spend-authorization `RedPallas` generator.
     #[must_use]
     pub fn generator() -> Self {
-        Self(pallas::Point::generator())
+        Self(
+            pallas::Point::from_bytes(&ORCHARD_SPEND_AUTH_BASEPOINT_BYTES)
+                .expect("valid Orchard SpendAuth basepoint"),
+        )
     }
 
     /// Multiply the standard generator by a scalar.
     #[must_use]
     pub fn generator_mul(scalar: PallasScalar) -> Self {
-        Self(pallas::Point::generator() * scalar.0)
+        Self(Self::generator().0 * scalar.0)
+    }
+
+    /// Hash a message to a Pallas point with a domain prefix.
+    #[must_use]
+    pub fn hash_to_curve(domain_prefix: &str, message: &[u8]) -> Self {
+        Self(pallas::Point::hash_to_curve(domain_prefix)(message))
     }
 
     /// Multiply this point by a scalar.
@@ -279,6 +294,14 @@ mod tests {
         let encoded = point.to_bytes();
 
         assert_eq!(PallasPoint::from_bytes(encoded), Some(point));
+    }
+
+    #[test]
+    fn pallas_generator_is_orchard_spendauth_basepoint() {
+        assert_eq!(
+            PallasPoint::generator().to_bytes(),
+            super::ORCHARD_SPEND_AUTH_BASEPOINT_BYTES
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub use dealer::{DealerConfig, DealerError, DealerSecret, build_transcript, reco
 pub use field::FieldElement;
 pub use polynomial::{InterpolationError, Polynomial, interpolate_at_zero};
 pub use transcript::{
-    MaskedShare, ParticipantId, ProofStatus, PublicPolynomial, Transcript, VerificationError,
-    VerifiedTranscript, validate_transcript, verify_transcript,
+    MAX_FROST_PARTICIPANT_ID, MaskedShare, ParticipantId, ParticipantIdError, ProofStatus,
+    PublicPolynomial, Transcript, VerificationError, VerifiedTranscript, validate_transcript,
+    verify_transcript,
 };

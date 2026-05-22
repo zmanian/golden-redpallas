@@ -56,8 +56,6 @@ fn digest_public_inputs(public_inputs: &ProofPublicInputs) -> Vec<u8> {
         .to_state()
         .update(DIGEST_DOMAIN)
         .update(&public_inputs.mask_transcript())
-        .update(&public_inputs.shared_point.point().to_bytes())
-        .update(&public_inputs.mask.to_bytes())
         .update(&public_inputs.mask_commitment.to_bytes())
         .finalize();
     hash.as_bytes().to_vec()
@@ -67,7 +65,7 @@ fn digest_public_inputs(public_inputs: &ProofPublicInputs) -> Vec<u8> {
 mod tests {
     use golden_core::{FieldElement, ParticipantId, Polynomial};
     use golden_pallas::{
-        HelperPublicKey, HelperSecretKey, PallasPoint, PallasScalar, VestaScalar,
+        HelperPublicKey, HelperSecretKey, PallasPoint, PallasScalar, SharedSecret, VestaScalar,
         commit_polynomial, derive_mask,
     };
 
@@ -85,31 +83,42 @@ mod tests {
             PallasScalar::from_u64(5),
             PallasScalar::from_u64(7),
         ]));
-        let mut public_inputs = ProofPublicInputs {
+        let shared_point = dealer_secret.diffie_hellman(participant_secret.public_key());
+        let mask = derive_mask(shared_point, &{
+            let inputs = ProofPublicInputs {
+                session_id: b"proof-fixture-session".to_vec(),
+                dealer_id: id(10),
+                participant_id: id(1),
+                dealer_public: dealer_secret.public_key(),
+                participant_public: participant_secret.public_key(),
+                mask_commitment: PallasPoint::identity(),
+                public_polynomial: public_polynomial.clone(),
+            };
+            inputs.mask_transcript()
+        });
+        let public_inputs = ProofPublicInputs {
             session_id: b"proof-fixture-session".to_vec(),
             dealer_id: id(10),
             participant_id: id(1),
             dealer_public: dealer_secret.public_key(),
             participant_public: participant_secret.public_key(),
-            shared_point: dealer_secret.diffie_hellman(participant_secret.public_key()),
-            mask: PallasScalar::ZERO,
-            mask_commitment: PallasPoint::identity(),
+            mask_commitment: PallasPoint::generator_mul(mask),
             public_polynomial,
         };
-        let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
-        public_inputs.mask = mask;
-        public_inputs.mask_commitment = PallasPoint::generator_mul(mask);
         let witness = ProofWitness {
             dealer_secret: dealer_secret.scalar(),
-            shared_point: public_inputs.shared_point.point(),
+            shared_point: shared_point.point(),
             mask,
         };
         (public_inputs, witness)
     }
 
-    fn refresh_mask(public_inputs: &mut ProofPublicInputs) {
-        let mask = derive_mask(public_inputs.shared_point, &public_inputs.mask_transcript());
-        public_inputs.mask = mask;
+    fn refresh_mask(public_inputs: &mut ProofPublicInputs, witness: &mut ProofWitness) {
+        let mask = derive_mask(
+            SharedSecret::from_point(witness.shared_point),
+            &public_inputs.mask_transcript(),
+        );
+        witness.mask = mask;
         public_inputs.mask_commitment = PallasPoint::generator_mul(mask);
     }
 
@@ -224,8 +233,7 @@ mod tests {
         let first_proof = FixtureProofSystem::prove(&first_inputs, &first_witness).expect("proof");
         let (mut second_inputs, mut second_witness) = valid_case();
         second_inputs.participant_id = id(2);
-        refresh_mask(&mut second_inputs);
-        second_witness.mask = second_inputs.mask;
+        refresh_mask(&mut second_inputs, &mut second_witness);
         let second_proof =
             FixtureProofSystem::prove(&second_inputs, &second_witness).expect("proof");
         let batch = [

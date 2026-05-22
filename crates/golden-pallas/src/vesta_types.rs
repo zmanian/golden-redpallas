@@ -3,6 +3,7 @@
 use core::ops::{Add, AddAssign, Neg, Sub, SubAssign};
 
 use pasta_curves::{
+    arithmetic::{Coordinates, CurveAffine},
     group::{
         Curve, Group, GroupEncoding,
         ff::{Field, PrimeField},
@@ -10,6 +11,8 @@ use pasta_curves::{
     },
     vesta,
 };
+
+use crate::PallasScalar;
 
 /// Vesta scalar used for helper-curve group operations.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,6 +100,18 @@ impl VestaPoint {
         self.0.to_affine().to_bytes()
     }
 
+    /// Return affine coordinates as Pallas scalar-field elements.
+    #[must_use]
+    pub fn affine_coordinates(self) -> Option<(PallasScalar, PallasScalar)> {
+        let affine = self.0.to_affine();
+        Option::<Coordinates<vesta::Affine>>::from(affine.coordinates()).map(|coords| {
+            (
+                PallasScalar::from_inner(*coords.x()),
+                PallasScalar::from_inner(*coords.y()),
+            )
+        })
+    }
+
     /// Parse a canonical compressed encoding.
     #[must_use]
     pub fn from_bytes(bytes: [u8; 32]) -> Option<Self> {
@@ -143,6 +158,8 @@ impl Neg for VestaPoint {
 
 #[cfg(test)]
 mod tests {
+    use golden_core::FieldElement;
+
     use super::{VestaPoint, VestaScalar};
 
     #[test]
@@ -151,6 +168,15 @@ mod tests {
         let encoded = point.to_bytes();
 
         assert_eq!(VestaPoint::from_bytes(encoded), Some(point));
+    }
+
+    #[test]
+    fn vesta_point_exposes_affine_coordinates() {
+        let point = VestaPoint::generator_mul(VestaScalar::from_u64(42));
+        let (x, y) = point.affine_coordinates().expect("non-identity point");
+        let five = crate::PallasScalar::from_u64(5);
+
+        assert_eq!(y * y, (x * x * x) + five);
     }
 
     #[test]

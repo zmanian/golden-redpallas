@@ -41,6 +41,11 @@ public API:
 - `ProofSystem::verify`
 - `ProofSystem::verify_batch`
 
+`ProofPublicInputs` must remain limited to the session binding, dealer and
+participant identifiers, helper public keys, mask commitment, and public
+polynomial. The DH shared point and derived mask are witness/proof-internal
+values, not public inputs.
+
 ## Consequences
 
 - The DKG and proof plumbing can continue to develop against stable proof
@@ -54,6 +59,19 @@ public API:
 ## Implementation Notes
 
 The first production backend milestone should not attempt the full Golden eVRF
-circuit. It should implement a small Pallas-field inner-product proof skeleton
-with deterministic tests, transcript domain separation, and batch-verification
-shape. After that, add the R1CS layer and eVRF constraints incrementally.
+circuit. It now includes a small Pallas-field inner-product proof layer with
+deterministic tests, transcript domain separation, hash-to-curve generator
+derivation, compact proof encoding, and the basic verifier rejection shape. It
+also includes the R1CS-facing circuit layout and constant-column preserving
+R1CS adapter, plus a first circuit proof object that reduces constraints to IPA
+and round-trips as opaque bytes. The active Pallas proof envelope now embeds
+that circuit proof instead of serializing the shared-point/mask trace. The mask
+circuit now uses Arkworks gadgets to prove Blake2b-512 mask digest generation,
+digest reduction to the hidden mask scalar, compressed shared-point encoding,
+Vesta curve membership, and y-parity sign binding. A linked Arkworks-derived
+circuit proves the Vesta scalar-multiplication relation for the dealer public
+key and shared point against the same hidden coordinate commitments. A private
+test-only prover seam accepts an injected RNG so release tests can reproduce
+opaque proof bytes exactly while the public prover remains randomized with
+`OsRng`. The next step is profiling, hardening, and independent cryptographic
+review.

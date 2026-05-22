@@ -9,7 +9,13 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+frost-rerandomized = "0.6.0"
 golden-core = { path = "../golden-core" }
+golden-pallas = { path = "../golden-pallas" }
+reddsa = { version = "0.5.1", features = ["frost"] }
+
+[dev-dependencies]
+rand_core = "0.6"
 
 [lints]
 workspace = true

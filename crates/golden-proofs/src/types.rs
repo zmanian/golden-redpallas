@@ -2,9 +2,13 @@
 
 use golden_core::{ParticipantId, PublicPolynomial};
 use golden_pallas::{
-    HelperPublicKey, PallasPoint, PallasScalar, SharedSecret, VestaPoint, VestaScalar,
-    dkg_mask_transcript,
+    HelperPublicKey, PallasPoint, PallasScalar, VestaPoint, VestaScalar, dkg_mask_transcript,
 };
+
+const PUBLIC_INPUTS_MAGIC: &[u8; 4] = b"GPPI";
+const PUBLIC_INPUTS_VERSION: u8 = 0;
+const LEN_BYTES: usize = 8;
+const PARTICIPANT_ID_BYTES: usize = 2;
 
 /// Public inputs for one Golden mask proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -19,10 +23,6 @@ pub struct ProofPublicInputs {
     pub dealer_public: HelperPublicKey,
     /// Participant helper-curve public key.
     pub participant_public: HelperPublicKey,
-    /// Diffie-Hellman shared helper point.
-    pub shared_point: SharedSecret,
-    /// Derived mask.
-    pub mask: PallasScalar,
     /// Commitment to the mask in the DKG group.
     pub mask_commitment: PallasPoint,
     /// Dealer public polynomial commitments.
@@ -42,6 +42,116 @@ impl ProofPublicInputs {
             &self.public_polynomial,
         )
     }
+
+    /// Return the canonical byte encoding for these public inputs.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(
+            PUBLIC_INPUTS_MAGIC.len()
+                + 1
+                + LEN_BYTES
+                + self.session_id.len()
+                + (PARTICIPANT_ID_BYTES * 2)
+                + (32 * 3)
+                + LEN_BYTES
+                + (32 * self.public_polynomial.coefficient_commitments.len()),
+        );
+        bytes.extend_from_slice(PUBLIC_INPUTS_MAGIC);
+        bytes.push(PUBLIC_INPUTS_VERSION);
+        write_len(&mut bytes, self.session_id.len());
+        bytes.extend_from_slice(&self.session_id);
+        bytes.extend_from_slice(&self.dealer_id.as_u16().to_le_bytes());
+        bytes.extend_from_slice(&self.participant_id.as_u16().to_le_bytes());
+        bytes.extend_from_slice(&self.dealer_public.point().to_bytes());
+        bytes.extend_from_slice(&self.participant_public.point().to_bytes());
+        bytes.extend_from_slice(&self.mask_commitment.to_bytes());
+        write_len(
+            &mut bytes,
+            self.public_polynomial.coefficient_commitments.len(),
+        );
+        for commitment in &self.public_polynomial.coefficient_commitments {
+            bytes.extend_from_slice(&commitment.to_bytes());
+        }
+        bytes
+    }
+
+    /// Parse a canonical byte encoding produced by [`Self::to_bytes`].
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProofError> {
+        let mut offset = 0_usize;
+        if read_array::<4>(bytes, &mut offset)? != *PUBLIC_INPUTS_MAGIC {
+            return Err(ProofError::InvalidProof);
+        }
+        if read_array::<1>(bytes, &mut offset)?[0] != PUBLIC_INPUTS_VERSION {
+            return Err(ProofError::InvalidProof);
+        }
+
+        let session_len = read_len(bytes, &mut offset)?;
+        let session_id = read_slice(bytes, &mut offset, session_len)?.to_vec();
+        let dealer_id = read_participant_id(bytes, &mut offset)?;
+        let participant_id = read_participant_id(bytes, &mut offset)?;
+        let dealer_public = HelperPublicKey::from_point(read_vesta_point(bytes, &mut offset)?);
+        let participant_public = HelperPublicKey::from_point(read_vesta_point(bytes, &mut offset)?);
+        let mask_commitment = read_pallas_point(bytes, &mut offset)?;
+        let polynomial_len = read_len(bytes, &mut offset)?;
+        if polynomial_len == 0 {
+            return Err(ProofError::InvalidProof);
+        }
+        let mut coefficient_commitments = Vec::with_capacity(polynomial_len);
+        for _ in 0..polynomial_len {
+            coefficient_commitments.push(read_pallas_point(bytes, &mut offset)?);
+        }
+
+        if offset != bytes.len() {
+            return Err(ProofError::InvalidProof);
+        }
+
+        Ok(Self {
+            session_id,
+            dealer_id,
+            participant_id,
+            dealer_public,
+            participant_public,
+            mask_commitment,
+            public_polynomial: PublicPolynomial {
+                coefficient_commitments,
+            },
+        })
+    }
+}
+
+fn write_len(bytes: &mut Vec<u8>, len: usize) {
+    let len = u64::try_from(len).expect("usize length fits in u64");
+    bytes.extend_from_slice(&len.to_le_bytes());
+}
+
+fn read_len(bytes: &[u8], offset: &mut usize) -> Result<usize, ProofError> {
+    usize::try_from(u64::from_le_bytes(read_array(bytes, offset)?))
+        .map_err(|_| ProofError::InvalidProof)
+}
+
+fn read_participant_id(bytes: &[u8], offset: &mut usize) -> Result<ParticipantId, ProofError> {
+    ParticipantId::try_from(u16::from_le_bytes(read_array(bytes, offset)?))
+        .map_err(|_| ProofError::InvalidProof)
+}
+
+fn read_pallas_point(bytes: &[u8], offset: &mut usize) -> Result<PallasPoint, ProofError> {
+    PallasPoint::from_bytes(read_array(bytes, offset)?).ok_or(ProofError::InvalidProof)
+}
+
+fn read_vesta_point(bytes: &[u8], offset: &mut usize) -> Result<VestaPoint, ProofError> {
+    VestaPoint::from_bytes(read_array(bytes, offset)?).ok_or(ProofError::InvalidProof)
+}
+
+fn read_array<const N: usize>(bytes: &[u8], offset: &mut usize) -> Result<[u8; N], ProofError> {
+    let slice = read_slice(bytes, offset, N)?;
+    slice.try_into().map_err(|_| ProofError::InvalidProof)
+}
+
+fn read_slice<'a>(bytes: &'a [u8], offset: &mut usize, len: usize) -> Result<&'a [u8], ProofError> {
+    let end = offset.checked_add(len).ok_or(ProofError::InvalidProof)?;
+    let slice = bytes.get(*offset..end).ok_or(ProofError::InvalidProof)?;
+    *offset = end;
+    Ok(slice)
 }
 
 /// Private witness for one Golden mask proof.
@@ -105,5 +215,121 @@ pub trait ProofSystem {
             Self::verify(item.public_inputs, item.proof)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use golden_core::{FieldElement, ParticipantId, PublicPolynomial};
+    use golden_pallas::{
+        HelperPublicKey, PallasPoint, PallasScalar, VestaPoint, VestaScalar, commit_polynomial,
+    };
+
+    use super::{ProofError, ProofPublicInputs};
+
+    fn id(value: u64) -> ParticipantId {
+        ParticipantId::new(value).expect("non-zero participant id")
+    }
+
+    fn public_inputs() -> ProofPublicInputs {
+        let public_polynomial = commit_polynomial(&golden_core::Polynomial::new(vec![
+            PallasScalar::from_u64(5),
+            PallasScalar::from_u64(7),
+        ]));
+        ProofPublicInputs {
+            session_id: b"proof-public-input-encoding-test".to_vec(),
+            dealer_id: id(10),
+            participant_id: id(2),
+            dealer_public: HelperPublicKey::from_point(VestaPoint::generator_mul(
+                VestaScalar::from_u64(13),
+            )),
+            participant_public: HelperPublicKey::from_point(VestaPoint::generator_mul(
+                VestaScalar::from_u64(31),
+            )),
+            mask_commitment: PallasPoint::generator_mul(PallasScalar::from_u64(42)),
+            public_polynomial,
+        }
+    }
+
+    #[test]
+    fn proof_public_inputs_roundtrip_through_canonical_bytes() {
+        let inputs = public_inputs();
+        let encoded = inputs.to_bytes();
+
+        assert_eq!(ProofPublicInputs::from_bytes(&encoded), Ok(inputs));
+    }
+
+    #[test]
+    fn proof_public_inputs_decoder_rejects_malformed_bytes() {
+        assert_eq!(
+            ProofPublicInputs::from_bytes(&[]),
+            Err(ProofError::InvalidProof)
+        );
+
+        let mut encoded = public_inputs().to_bytes();
+        for len in 0..encoded.len() {
+            assert_eq!(
+                ProofPublicInputs::from_bytes(&encoded[..len]),
+                Err(ProofError::InvalidProof)
+            );
+        }
+
+        encoded.push(0);
+        assert_eq!(
+            ProofPublicInputs::from_bytes(&encoded),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn proof_public_inputs_decoder_rejects_zero_participant_ids() {
+        let mut encoded = public_inputs().to_bytes();
+        let dealer_id_offset = 4 + 1 + 8 + b"proof-public-input-encoding-test".len();
+        encoded[dealer_id_offset] = 0;
+        encoded[dealer_id_offset + 1] = 0;
+
+        assert_eq!(
+            ProofPublicInputs::from_bytes(&encoded),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn proof_public_inputs_decoder_rejects_non_canonical_points() {
+        let mut encoded = public_inputs().to_bytes();
+        let dealer_public_offset = 4 + 1 + 8 + b"proof-public-input-encoding-test".len() + 4;
+        encoded[dealer_public_offset..dealer_public_offset + 32].fill(0xff);
+
+        assert_eq!(
+            ProofPublicInputs::from_bytes(&encoded),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn proof_public_inputs_decoder_rejects_empty_public_polynomial() {
+        let mut encoded = public_inputs().to_bytes();
+        let polynomial_len_offset = 4 + 1 + 8 + b"proof-public-input-encoding-test".len() + 4 + 96;
+        encoded[polynomial_len_offset..polynomial_len_offset + 8].fill(0);
+        encoded.truncate(polynomial_len_offset + 8);
+
+        assert_eq!(
+            ProofPublicInputs::from_bytes(&encoded),
+            Err(ProofError::InvalidProof)
+        );
+    }
+
+    #[test]
+    fn proof_public_inputs_mask_transcript_survives_roundtrip() {
+        let inputs = public_inputs();
+        let decoded = ProofPublicInputs::from_bytes(&inputs.to_bytes()).expect("decode");
+
+        assert_eq!(decoded.mask_transcript(), inputs.mask_transcript());
+        assert_eq!(
+            decoded.public_polynomial,
+            PublicPolynomial {
+                coefficient_commitments: inputs.public_polynomial.coefficient_commitments,
+            }
+        );
     }
 }

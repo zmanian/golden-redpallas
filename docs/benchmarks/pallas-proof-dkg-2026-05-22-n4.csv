@@ -1,0 +1,2 @@
+n,threshold,dealers,proofs,proof_bytes,prove_micros,prove_rss_bytes,verify_one_micros,verify_batch_micros,verify_all_micros
+4,3,4,16,47024,300116581,338231296,33095695,33142576,132792004
