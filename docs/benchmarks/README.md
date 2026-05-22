@@ -60,11 +60,12 @@ to a reusable circuit-family domain, adding in-process IPA generator-vector
 caching, and switching circuit/IPA Fiat-Shamir setup prefixes to compact
 domain-separated digests.
 
-`pallas-proof-dkg-2026-05-22-n4.csv` and
-`pallas-proof-dkg-2026-05-22-n8.csv` are current-harness DKG benchmark rows
+`pallas-proof-dkg-2026-05-22-n4.csv`,
+`pallas-proof-dkg-2026-05-22-n8.csv`, and
+`pallas-proof-dkg-2026-05-22-n16.csv` are current-harness DKG benchmark rows
 collected after the same setup-cache and transcript-digest hardening. The
-`n = 8` row was collected outside the sandbox so the macOS RSS probe could
-populate `prove_rss_bytes`. The remaining `n = 16` and `n = 32` rows are still
+`n = 8` and `n = 16` rows were collected outside the sandbox so the macOS RSS
+probe could populate `prove_rss_bytes`. The remaining `n = 32` row is still
 pending because the current prover path is too expensive for a comfortable
 interactive full-matrix run.
 

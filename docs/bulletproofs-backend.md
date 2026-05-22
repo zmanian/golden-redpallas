@@ -226,5 +226,7 @@ comparisons.
 The current-harness `n = 4` row is archived as
 `docs/benchmarks/pallas-proof-dkg-2026-05-22-n4.csv`; the current-harness
 `n = 8` row is archived as
-`docs/benchmarks/pallas-proof-dkg-2026-05-22-n8.csv`; the `n = 16` and `n = 32`
-rows remain pending.
+`docs/benchmarks/pallas-proof-dkg-2026-05-22-n8.csv`; the current-harness
+`n = 16` row is archived as
+`docs/benchmarks/pallas-proof-dkg-2026-05-22-n16.csv`; the `n = 32` row remains
+pending.

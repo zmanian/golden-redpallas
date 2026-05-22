@@ -47,12 +47,13 @@ run.
   timing. The current `pallas-proof-circuit-profile-2026-05-22.csv` profiles
   the linked mask and Vesta-DH circuit dimensions without creating a proof; it
   identifies the mask hash circuit as the dominant cost with 152,298 of 160,959
-  total constraints. The current `pallas-proof-dkg-2026-05-22-n4.csv` and
-  `pallas-proof-dkg-2026-05-22-n8.csv` files cover the `n = 4` and `n = 8` DKG
-  rows with the current harness fields. The archived
+  total constraints. The current `pallas-proof-dkg-2026-05-22-n4.csv`,
+  `pallas-proof-dkg-2026-05-22-n8.csv`, and
+  `pallas-proof-dkg-2026-05-22-n16.csv` files cover the `n = 4`, `n = 8`, and
+  `n = 16` DKG rows with the current harness fields. The archived
   `pallas-proof-skeleton-2026-05-21.csv` covers `n = 8`, `n = 16`, and `n = 32`
-  but predates the current harness fields; regenerate the remaining
-  `n = 16, 32` current-harness rows before audit closeout.
+  but predates the current harness fields; regenerate the remaining `n = 32`
+  current-harness row before audit closeout.
 
 ## Current Verification Commands
 
