@@ -18,6 +18,35 @@ const SINGLE_PROOF_CSV_HEADER: &str =
     "scenario,proofs,proof_bytes,prove_micros,prove_rss_bytes,verify_micros";
 const CIRCUIT_PROFILE_CSV_HEADER: &str = "scenario,circuit,committed_vars,internal_vars,constraints,columns,padded_vars,ipa_log_len,total_constraints";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DkgProgress {
+    SizeStart {
+        n: u64,
+        threshold: usize,
+        dealers: usize,
+    },
+    ProofGenerationStart {
+        n: u64,
+    },
+    ProofGenerationEnd {
+        n: u64,
+        proofs: usize,
+        proof_bytes: usize,
+    },
+    VerifyOneStart {
+        n: u64,
+    },
+    VerifyBatchStart {
+        n: u64,
+    },
+    VerifyAllStart {
+        n: u64,
+    },
+    SizeEnd {
+        n: u64,
+    },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BenchmarkCommand {
     Dkg { sizes: Vec<u64> },
@@ -44,7 +73,13 @@ fn run_dkg_benchmarks(sizes: &[u64]) {
     for &n in sizes {
         let fixture = bench_fixture(n);
         let threshold = fixture.threshold;
+        emit_dkg_progress(DkgProgress::SizeStart {
+            n,
+            threshold,
+            dealers: fixture.dealers.len(),
+        });
 
+        emit_dkg_progress(DkgProgress::ProofGenerationStart { n });
         let prove_start = Instant::now();
         let proofed =
             ProofedDkgSimulation::<PallasProofSkeleton>::from_fixture(&fixture).expect("proofed");
@@ -61,8 +96,14 @@ fn run_dkg_benchmarks(sizes: &[u64]) {
             .flat_map(|transcript| &transcript.proofs)
             .map(|entry| entry.proof.bytes.len())
             .sum::<usize>();
+        emit_dkg_progress(DkgProgress::ProofGenerationEnd {
+            n,
+            proofs: proof_count,
+            proof_bytes,
+        });
 
         let first_participant = proofed.simulation.participants[0].id;
+        emit_dkg_progress(DkgProgress::VerifyOneStart { n });
         let verify_one_start = Instant::now();
         proofed
             .recover_participant(first_participant)
@@ -70,10 +111,12 @@ fn run_dkg_benchmarks(sizes: &[u64]) {
         let verify_one_micros = verify_one_start.elapsed().as_micros();
 
         let first_batch = batch_for_participant(&proofed, first_participant);
+        emit_dkg_progress(DkgProgress::VerifyBatchStart { n });
         let verify_batch_start = Instant::now();
         PallasProofSkeleton::verify_batch(&first_batch).expect("first participant batch verifies");
         let verify_batch_micros = verify_batch_start.elapsed().as_micros();
 
+        emit_dkg_progress(DkgProgress::VerifyAllStart { n });
         let verify_all_start = Instant::now();
         for participant in &proofed.simulation.participants {
             proofed
@@ -86,6 +129,41 @@ fn run_dkg_benchmarks(sizes: &[u64]) {
             "{n},{threshold},{dealers},{proof_count},{proof_bytes},{prove_micros},{prove_rss_bytes},{verify_one_micros},{verify_batch_micros},{verify_all_micros}",
             dealers = proofed.simulation.dealers.len(),
         );
+        emit_dkg_progress(DkgProgress::SizeEnd { n });
+    }
+}
+
+fn emit_dkg_progress(progress: DkgProgress) {
+    eprintln!("{}", format_dkg_progress(progress));
+}
+
+fn format_dkg_progress(progress: DkgProgress) -> String {
+    match progress {
+        DkgProgress::SizeStart {
+            n,
+            threshold,
+            dealers,
+        } => format!(
+            "pallas_bench: n={n} starting DKG benchmark, threshold={threshold}, dealers={dealers}"
+        ),
+        DkgProgress::ProofGenerationStart { n } => {
+            format!("pallas_bench: n={n} proving proofs")
+        }
+        DkgProgress::ProofGenerationEnd {
+            n,
+            proofs,
+            proof_bytes,
+        } => format!("pallas_bench: n={n} proved {proofs} proofs, {proof_bytes} proof bytes"),
+        DkgProgress::VerifyOneStart { n } => {
+            format!("pallas_bench: n={n} verifying first participant recovery")
+        }
+        DkgProgress::VerifyBatchStart { n } => {
+            format!("pallas_bench: n={n} verifying first participant batch")
+        }
+        DkgProgress::VerifyAllStart { n } => {
+            format!("pallas_bench: n={n} verifying all participant recoveries")
+        }
+        DkgProgress::SizeEnd { n } => format!("pallas_bench: n={n} complete"),
     }
 }
 
@@ -378,6 +456,26 @@ mod tests {
         assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("circuit"));
         assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("constraints"));
         assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("ipa_log_len"));
+    }
+
+    #[test]
+    fn dkg_progress_messages_identify_size_and_phase() {
+        assert_eq!(
+            super::format_dkg_progress(super::DkgProgress::ProofGenerationStart { n: 16 }),
+            "pallas_bench: n=16 proving proofs"
+        );
+        assert_eq!(
+            super::format_dkg_progress(super::DkgProgress::ProofGenerationEnd {
+                n: 16,
+                proofs: 256,
+                proof_bytes: 752_384,
+            }),
+            "pallas_bench: n=16 proved 256 proofs, 752384 proof bytes"
+        );
+        assert_eq!(
+            super::format_dkg_progress(super::DkgProgress::VerifyAllStart { n: 16 }),
+            "pallas_bench: n=16 verifying all participant recoveries"
+        );
     }
 
     #[test]
