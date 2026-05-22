@@ -33,6 +33,13 @@ enum DkgProgress {
         proofs: usize,
         proof_bytes: usize,
     },
+    ProofGenerated {
+        n: u64,
+        completed: usize,
+        total: usize,
+        dealer: ParticipantId,
+        participant: ParticipantId,
+    },
     VerifyOneStart {
         n: u64,
     },
@@ -81,8 +88,19 @@ fn run_dkg_benchmarks(sizes: &[u64]) {
 
         emit_dkg_progress(DkgProgress::ProofGenerationStart { n });
         let prove_start = Instant::now();
-        let proofed =
-            ProofedDkgSimulation::<PallasProofSkeleton>::from_fixture(&fixture).expect("proofed");
+        let proofed = ProofedDkgSimulation::<PallasProofSkeleton>::from_fixture_with_progress(
+            &fixture,
+            |progress| {
+                emit_dkg_progress(DkgProgress::ProofGenerated {
+                    n,
+                    completed: progress.completed,
+                    total: progress.total,
+                    dealer: progress.dealer,
+                    participant: progress.participant,
+                });
+            },
+        )
+        .expect("proofed");
         let prove_micros = prove_start.elapsed().as_micros();
         let prove_rss_bytes = rss_bytes();
         let proof_count = proofed
@@ -154,6 +172,19 @@ fn format_dkg_progress(progress: DkgProgress) -> String {
             proofs,
             proof_bytes,
         } => format!("pallas_bench: n={n} proved {proofs} proofs, {proof_bytes} proof bytes"),
+        DkgProgress::ProofGenerated {
+            n,
+            completed,
+            total,
+            dealer,
+            participant,
+        } => {
+            format!(
+                "pallas_bench: n={n} proved proof {completed}/{total} dealer={dealer} participant={participant}",
+                dealer = dealer.get(),
+                participant = participant.get(),
+            )
+        }
         DkgProgress::VerifyOneStart { n } => {
             format!("pallas_bench: n={n} verifying first participant recovery")
         }
@@ -471,6 +502,16 @@ mod tests {
                 proof_bytes: 752_384,
             }),
             "pallas_bench: n=16 proved 256 proofs, 752384 proof bytes"
+        );
+        assert_eq!(
+            super::format_dkg_progress(super::DkgProgress::ProofGenerated {
+                n: 16,
+                completed: 17,
+                total: 256,
+                dealer: super::benchmark_id(1_002),
+                participant: super::benchmark_id(1),
+            }),
+            "pallas_bench: n=16 proved proof 17/256 dealer=1002 participant=1"
         );
         assert_eq!(
             super::format_dkg_progress(super::DkgProgress::VerifyAllStart { n: 16 }),

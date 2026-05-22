@@ -43,6 +43,19 @@ pub struct ProofedDkgSimulation<P> {
     proof_system: PhantomData<P>,
 }
 
+/// Progress reported after a proofed-DKG mask proof is generated.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProofedDkgProofProgress {
+    /// Number of proofs generated so far.
+    pub completed: usize,
+    /// Total number of proofs required for the simulation.
+    pub total: usize,
+    /// Dealer whose proof was just generated.
+    pub dealer: ParticipantId,
+    /// Participant receiving the masked share whose proof was just generated.
+    pub participant: ParticipantId,
+}
+
 /// Proof-aware DKG simulation using the feature-gated Pallas backend candidate.
 #[cfg(feature = "pallas-backend")]
 pub type PallasProofedDkgSimulation = ProofedDkgSimulation<crate::PallasProofSkeleton>;
@@ -50,12 +63,33 @@ pub type PallasProofedDkgSimulation = ProofedDkgSimulation<crate::PallasProofSke
 impl<P: ProofSystem> ProofedDkgSimulation<P> {
     /// Build a proof-aware simulation from a deterministic fixture.
     pub fn from_fixture(fixture: &DkgFixture) -> Result<Self, ProofedDkgError> {
+        Self::from_fixture_with_progress(fixture, |_| {})
+    }
+
+    /// Build a proof-aware simulation from a deterministic fixture and report
+    /// after each dealer/participant mask proof is generated.
+    pub fn from_fixture_with_progress(
+        fixture: &DkgFixture,
+        mut progress: impl FnMut(ProofedDkgProofProgress),
+    ) -> Result<Self, ProofedDkgError> {
         let simulation = fixture.run()?;
-        let proofed_transcripts = simulation
+        let total_proofs = simulation
             .transcripts
             .iter()
-            .map(|transcript| proof_transcript::<P>(&simulation, transcript))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|transcript| transcript.masked_shares.len())
+            .sum::<usize>();
+        let mut completed_proofs = 0;
+        let mut proofed_transcripts = Vec::with_capacity(simulation.transcripts.len());
+
+        for transcript in &simulation.transcripts {
+            proofed_transcripts.push(proof_transcript::<P>(
+                &simulation,
+                transcript,
+                total_proofs,
+                &mut completed_proofs,
+                &mut progress,
+            )?);
+        }
 
         Ok(Self {
             simulation,
@@ -139,6 +173,9 @@ pub fn recover_with_proofs<P: ProofSystem>(
 fn proof_transcript<P: ProofSystem>(
     simulation: &DkgSimulation,
     transcript: &Transcript<PallasScalar, PallasPoint>,
+    total_proofs: usize,
+    completed_proofs: &mut usize,
+    progress: &mut impl FnMut(ProofedDkgProofProgress),
 ) -> Result<ProofedTranscript, ProofedDkgError> {
     let dealer = find_dealer(simulation, transcript.dealer)?;
     let proofs = transcript
@@ -164,6 +201,13 @@ fn proof_transcript<P: ProofSystem>(
                     participant: participant.id,
                     source,
                 })?;
+            *completed_proofs += 1;
+            progress(ProofedDkgProofProgress {
+                completed: *completed_proofs,
+                total: total_proofs,
+                dealer: transcript.dealer,
+                participant: participant.id,
+            });
             Ok(MaskProofEntry {
                 participant: participant.id,
                 public_inputs,
@@ -394,7 +438,9 @@ mod tests {
     #[cfg(feature = "pallas-backend")]
     use crate::{PallasProofSkeleton, PallasProofedDkgSimulation};
 
-    use super::{ProofedDkgError, ProofedDkgSimulation, recover_with_proofs};
+    use super::{
+        ProofedDkgError, ProofedDkgProofProgress, ProofedDkgSimulation, recover_with_proofs,
+    };
 
     const DKG_VECTOR_V0: &str = include_str!("../../../test-vectors/golden-pallas/dkg-v0.txt");
 
@@ -425,6 +471,33 @@ mod tests {
 
         assert_eq!(interpolate_at_zero(&samples[..2]), Ok(aggregate_secret));
         assert_eq!(interpolate_at_zero(&samples), Ok(aggregate_secret));
+    }
+
+    #[test]
+    fn proofed_fixture_reports_per_proof_progress() {
+        let fixture = DkgFixture::parse(DKG_VECTOR_V0).expect("fixture");
+        let mut progress = Vec::new();
+
+        ProofedDkgSimulation::<FixtureProofSystem>::from_fixture_with_progress(&fixture, |event| {
+            progress.push(event)
+        })
+        .expect("proofed");
+
+        let total = fixture.dealers.len() * fixture.participants.len();
+        assert_eq!(progress.len(), total);
+        assert_eq!(
+            progress.first(),
+            Some(&ProofedDkgProofProgress {
+                completed: 1,
+                total,
+                dealer: fixture.dealers[0].id,
+                participant: fixture.participants[0].id,
+            })
+        );
+        assert_eq!(
+            progress.last().map(|event| (event.completed, event.total)),
+            Some((total, total))
+        );
     }
 
     #[cfg(feature = "pallas-backend")]

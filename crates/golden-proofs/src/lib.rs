@@ -13,7 +13,9 @@ mod witness;
 
 #[cfg(feature = "pallas-backend")]
 pub use dkg::PallasProofedDkgSimulation;
-pub use dkg::{ProofedDkgSimulation, ProofedTranscript, recover_with_proofs};
+pub use dkg::{
+    ProofedDkgProofProgress, ProofedDkgSimulation, ProofedTranscript, recover_with_proofs,
+};
 pub use fixture::FixtureProofSystem;
 #[cfg(feature = "pallas-backend")]
 pub use pallas::{
