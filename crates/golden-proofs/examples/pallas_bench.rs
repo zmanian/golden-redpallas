@@ -49,6 +49,12 @@ enum DkgProgress {
     VerifyAllStart {
         n: u64,
     },
+    ParticipantRecoveryEnd {
+        n: u64,
+        completed: usize,
+        total: usize,
+        participant: ParticipantId,
+    },
     SizeEnd {
         n: u64,
     },
@@ -136,10 +142,17 @@ fn run_dkg_benchmarks(sizes: &[u64]) {
 
         emit_dkg_progress(DkgProgress::VerifyAllStart { n });
         let verify_all_start = Instant::now();
-        for participant in &proofed.simulation.participants {
+        let participant_count = proofed.simulation.participants.len();
+        for (index, participant) in proofed.simulation.participants.iter().enumerate() {
             proofed
                 .recover_participant(participant.id)
                 .expect("participant recovers");
+            emit_dkg_progress(DkgProgress::ParticipantRecoveryEnd {
+                n,
+                completed: index + 1,
+                total: participant_count,
+                participant: participant.id,
+            });
         }
         let verify_all_micros = verify_all_start.elapsed().as_micros();
 
@@ -193,6 +206,17 @@ fn format_dkg_progress(progress: DkgProgress) -> String {
         }
         DkgProgress::VerifyAllStart { n } => {
             format!("pallas_bench: n={n} verifying all participant recoveries")
+        }
+        DkgProgress::ParticipantRecoveryEnd {
+            n,
+            completed,
+            total,
+            participant,
+        } => {
+            format!(
+                "pallas_bench: n={n} verified participant recovery {completed}/{total} participant={participant}",
+                participant = participant.get(),
+            )
         }
         DkgProgress::SizeEnd { n } => format!("pallas_bench: n={n} complete"),
     }
@@ -516,6 +540,15 @@ mod tests {
         assert_eq!(
             super::format_dkg_progress(super::DkgProgress::VerifyAllStart { n: 16 }),
             "pallas_bench: n=16 verifying all participant recoveries"
+        );
+        assert_eq!(
+            super::format_dkg_progress(super::DkgProgress::ParticipantRecoveryEnd {
+                n: 16,
+                completed: 3,
+                total: 16,
+                participant: super::benchmark_id(3),
+            }),
+            "pallas_bench: n=16 verified participant recovery 3/16 participant=3"
         );
     }
 
