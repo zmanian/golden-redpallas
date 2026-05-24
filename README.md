@@ -22,15 +22,33 @@ Open work is tracked in [`docs/roadmap.md`](docs/roadmap.md).
 ## Workspace
 
 - `golden-core`: Golden protocol data flow, Shamir sharing, transcript model.
-- `golden-pallas`: Pallas/Vesta adapter boundary.
-- `frost-redpallas`: RedPallas/FROST adapter boundary.
-- `golden-cli`: CLI entry point for future DKG session operations.
+- `golden-pallas`: Pallas/Vesta adapter boundary and DKG simulation.
+- `golden-proofs`: proof verification hooks and the feature-gated Pallas proof backend.
+- `frost-redpallas`: RedPallas/FROST adapter boundary with ZIP-312 randomization.
+- `golden-cli`: `golden` binary for local DKG session operations.
 
 ## Build
 
 ```sh
 cargo test --workspace
 ```
+
+## CLI
+
+The `golden` binary drives local DKG sessions against fixtures:
+
+```sh
+cargo run -p golden-cli -- status                       # report build/security status
+cargo run -p golden-cli -- create <fixture> <session>   # create a session from a fixture
+cargo run -p golden-cli -- post <session>               # post participant contributions
+cargo run -p golden-cli -- verify <session>             # verify the aggregate transcript
+cargo run -p golden-cli -- recover <session> <id>       # recover a participant's wallet backup
+```
+
+## Documentation
+
+Design notes, threat model, and audit material live under [`docs/`](docs/);
+open work is tracked in [`docs/roadmap.md`](docs/roadmap.md).
 
 ## Security Status
 
