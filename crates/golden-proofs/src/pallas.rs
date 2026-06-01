@@ -2698,6 +2698,97 @@ mod poseidon_tests {
         assert!(cs.is_satisfied().expect("cs satisfied"));
     }
 
+    /// Deterministic, length-dependent pseudo-random bytes for absorb tests.
+    fn pattern_bytes(len: usize) -> Vec<u8> {
+        // Length is folded into the seed so that a prefix of a longer message
+        // does not equal a shorter message, exercising true length variation.
+        (0..len)
+            .map(|i| {
+                let mixed = i
+                    .wrapping_mul(31)
+                    .wrapping_add(len.wrapping_mul(7))
+                    .wrapping_add(13);
+                u8::try_from(mixed & 0xff).expect("masked to a byte")
+            })
+            .collect()
+    }
+
+    /// The native `&[u8]` sponge and the in-circuit `Vec<UInt8>` gadget must
+    /// squeeze identical field elements for the SAME byte stream across many
+    /// preimage lengths — including lengths that are not a multiple of the
+    /// field byte-capacity, so partial-final-block packing is exercised.
+    ///
+    /// Regression guard for the soundness review's "absorb packing unproven-
+    /// equal" finding: `mask_transcript` is variable length (it includes the
+    /// session id), so a packing divergence would surface only at some lengths
+    /// and would make the in-circuit `enforce_equal(&mask_var)` unsatisfiable
+    /// (a completeness break) for those inputs.
+    #[test]
+    fn poseidon_native_matches_circuit_across_lengths() {
+        // Span several rate/capacity permutation rounds and cross the per-field
+        // byte-packing boundary (~31 bytes/element, rate = 2) repeatedly,
+        // including odd, non-aligned lengths.
+        let lengths = [
+            0_usize, 1, 2, 30, 31, 32, 33, 61, 62, 63, 64, 65, 93, 95, 96, 97, 127, 128, 129, 130,
+            200, 255, 256, 257, 384, 500,
+        ];
+        for len in lengths {
+            let bytes = pattern_bytes(len);
+
+            // Native absorbs one contiguous stream; pass it all as `transcript`
+            // with empty domain/shared so the concatenated bytes equal `bytes`.
+            let native = poseidon_hash_native(&[], &[], &bytes);
+
+            let cs = ConstraintSystem::<ark_vesta::Fq>::new_ref();
+            let message: Vec<UInt8<ark_vesta::Fq>> = bytes
+                .iter()
+                .map(|byte| UInt8::new_witness(cs.clone(), || Ok(*byte)).expect("alloc byte"))
+                .collect();
+            let circuit = poseidon_hash_circuit(cs.clone(), &message).expect("circuit hash");
+
+            assert_eq!(
+                circuit.value().expect("circuit value"),
+                native,
+                "native vs circuit Poseidon squeeze diverged at preimage length {len}"
+            );
+            assert!(
+                cs.is_satisfied().expect("cs satisfied"),
+                "constraints unsatisfied at preimage length {len}"
+            );
+        }
+    }
+
+    /// The memoized config must store the Grain-LFSR generator's outputs in the
+    /// correct `PoseidonConfig::new` slots: `mds` (3x3) before `ark` (64 rows).
+    ///
+    /// Regression guard for the soundness review's "mds-vs-ark argument-order
+    /// hazard": swapping them keeps native == circuit (both share the config),
+    /// so a same-config round-trip and the existing KAT cannot localize the
+    /// bug. Here we re-run the generator and assert each output landed in its
+    /// intended field, pinning the constructor order independently of the KAT.
+    #[test]
+    fn poseidon_config_preserves_generator_ark_mds_order() {
+        use ark_crypto_primitives::sponge::poseidon::traits::find_poseidon_ark_and_mds;
+
+        let config = poseidon_mask_config();
+        // Generator returns `(ark, mds)`; `PoseidonConfig::new` takes mds first.
+        let (ark, mds) = find_poseidon_ark_and_mds::<ark_vesta::Fq>(255, 2, 8, 56, 0);
+
+        // ark = round constants: one row per (full + partial) round, width = t.
+        assert_eq!(ark.len(), 64, "ark must have full + partial rounds rows");
+        assert_eq!(config.ark, ark, "config.ark must be the generator's ark, not mds");
+        for row in &config.ark {
+            assert_eq!(row.len(), 3, "each ark row width must equal rate + capacity");
+        }
+
+        // mds = mixing matrix: square t x t = 3 x 3.
+        assert_eq!(mds.len(), 3, "mds must be 3 rows");
+        assert_eq!(config.mds, mds, "config.mds must be the generator's mds, not ark");
+        for row in &config.mds {
+            assert_eq!(row.len(), 3, "mds must be square 3 x 3");
+        }
+    }
+
     fn to_hex(bytes: &[u8]) -> String {
         use std::fmt::Write as _;
         let mut hex = String::with_capacity(bytes.len() * 2);
