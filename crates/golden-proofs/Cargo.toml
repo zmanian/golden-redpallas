@@ -14,6 +14,10 @@ ark-ff = { version = "0.5", default-features = false }
 ark-r1cs-std = { version = "0.5", default-features = false }
 ark-relations = { version = "0.5", default-features = false }
 ark-vesta = { version = "0.5", default-features = false, features = ["r1cs"] }
+ark-crypto-primitives = { version = "0.5", optional = true, default-features = false, features = [
+    "sponge",
+    "r1cs",
+] }
 blake2b_simd = "1.0.4"
 golden-core = { path = "../golden-core" }
 golden-pallas = { path = "../golden-pallas" }
@@ -23,6 +27,7 @@ rayon = "1.11"
 [features]
 default = []
 pallas-backend = []
+poseidon-mask = ["pallas-backend", "dep:ark-crypto-primitives"]
 
 [[example]]
 name = "pallas_bench"

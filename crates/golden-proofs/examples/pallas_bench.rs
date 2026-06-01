@@ -8,15 +8,33 @@ use golden_pallas::{
     SimulationParticipant, VestaScalar, commit_polynomial, derive_mask,
 };
 use golden_proofs::{
-    PallasProofSkeleton, ProofBatchItem, ProofPublicInputs, ProofSystem, ProofWitness,
-    ProofedDkgSimulation,
+    MaskHashKind, PallasProofSkeleton, ProofBatchItem, ProofPublicInputs, ProofSystem,
+    ProofWitness, ProofedDkgSimulation,
 };
 
 const BENCH_SIZES: [u64; 4] = [4, 8, 16, 32];
 const CSV_HEADER: &str = "n,threshold,dealers,proofs,proof_bytes,prove_micros,prove_rss_bytes,verify_one_micros,verify_batch_micros,verify_all_micros";
 const SINGLE_PROOF_CSV_HEADER: &str =
-    "scenario,proofs,proof_bytes,prove_micros,prove_rss_bytes,verify_micros";
-const CIRCUIT_PROFILE_CSV_HEADER: &str = "scenario,circuit,committed_vars,internal_vars,constraints,columns,padded_vars,ipa_log_len,total_constraints";
+    "scenario,hash,proofs,proof_bytes,prove_micros,prove_rss_bytes,verify_micros";
+const CIRCUIT_PROFILE_CSV_HEADER: &str = "scenario,hash,circuit,committed_vars,internal_vars,constraints,columns,padded_vars,ipa_log_len,total_constraints";
+
+/// Hash kinds the A/B benchmark walks over for one run.
+///
+/// `Blake2b` is always present. `Poseidon` only exists when the crate is built
+/// with the `poseidon-mask` feature, so the side-by-side rows are feature-gated.
+fn benchmark_hash_kinds() -> Vec<(&'static str, MaskHashKind)> {
+    #[cfg(feature = "poseidon-mask")]
+    {
+        vec![
+            ("blake2b", MaskHashKind::Blake2b),
+            ("poseidon", MaskHashKind::Poseidon),
+        ]
+    }
+    #[cfg(not(feature = "poseidon-mask"))]
+    {
+        vec![("blake2b", MaskHashKind::Blake2b)]
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DkgProgress {
@@ -225,49 +243,116 @@ fn format_dkg_progress(progress: DkgProgress) -> String {
 fn run_single_proof_benchmark() {
     println!("{SINGLE_PROOF_CSV_HEADER}");
 
-    let (public_inputs, witness) = single_proof_case();
-    let prove_start = Instant::now();
-    let proof = PallasProofSkeleton::prove(&public_inputs, &witness).expect("proof");
-    let prove_micros = prove_start.elapsed().as_micros();
-    let prove_rss_bytes = rss_bytes();
+    // Capture per-hash-kind timings so we can emit A/B ratios after the rows.
+    let mut measured: Vec<(&'static str, u128, u128, usize)> = Vec::new();
 
-    let verify_start = Instant::now();
-    PallasProofSkeleton::verify(&public_inputs, &proof).expect("proof verifies");
-    let verify_micros = verify_start.elapsed().as_micros();
+    for (label, hash_kind) in benchmark_hash_kinds() {
+        // Each hash kind binds the mask commitment to its own hash-to-field
+        // relation, so build a witness/public-inputs pair that matches it.
+        let (public_inputs, witness) = single_proof_case_for(hash_kind);
 
-    println!(
-        "single-proof,1,{proof_bytes},{prove_micros},{prove_rss_bytes},{verify_micros}",
-        proof_bytes = proof.bytes.len(),
-    );
+        let prove_start = Instant::now();
+        let proof = PallasProofSkeleton::prove_with_hash(&public_inputs, &witness, hash_kind)
+            .expect("proof");
+        let prove_micros = prove_start.elapsed().as_micros();
+        let prove_rss_bytes = rss_bytes();
+
+        let verify_start = Instant::now();
+        PallasProofSkeleton::verify_with_hash(&public_inputs, &proof, hash_kind)
+            .expect("proof verifies");
+        let verify_micros = verify_start.elapsed().as_micros();
+
+        let proof_bytes = proof.bytes.len();
+        println!(
+            "single-proof,{label},1,{proof_bytes},{prove_micros},{prove_rss_bytes},{verify_micros}"
+        );
+        measured.push((label, prove_micros, verify_micros, proof_bytes));
+    }
+
+    emit_ab_speedup_ratios(&measured);
+}
+
+/// Print Poseidon-vs-Blake2b prove/verify speedup ratios to stderr.
+///
+/// Ratios are blake2b/poseidon, so a value above 1.0 means Poseidon is faster.
+/// Emitted only when both kinds were measured (i.e. `poseidon-mask` is on).
+fn emit_ab_speedup_ratios(measured: &[(&'static str, u128, u128, usize)]) {
+    let blake = measured.iter().find(|row| row.0 == "blake2b");
+    let poseidon = measured.iter().find(|row| row.0 == "poseidon");
+    if let (Some(blake), Some(poseidon)) = (blake, poseidon) {
+        let prove_speedup = ratio(blake.1, poseidon.1);
+        let verify_speedup = ratio(blake.2, poseidon.2);
+        eprintln!(
+            "pallas_bench: A/B prove speedup (blake2b/poseidon) = {prove_speedup:.3}x, verify speedup = {verify_speedup:.3}x, proof_bytes blake2b={} poseidon={}",
+            blake.3, poseidon.3,
+        );
+    }
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "benchmark ratios are display-only; f64 precision is ample for the magnitudes involved"
+)]
+fn ratio(numerator: u128, denominator: u128) -> f64 {
+    if denominator == 0 {
+        return f64::NAN;
+    }
+    numerator as f64 / denominator as f64
 }
 
 fn run_circuit_profile_benchmark() {
     println!("{CIRCUIT_PROFILE_CSV_HEADER}");
 
     let (public_inputs, _) = single_proof_case();
-    let profile = PallasProofSkeleton::circuit_profile(&public_inputs).expect("profile");
-    print_circuit_profile_row(
-        "single-proof",
-        "mask",
-        profile.mask,
-        profile.total_constraints(),
-    );
-    print_circuit_profile_row(
-        "single-proof",
-        "vesta-dh",
-        profile.vesta_dh,
-        profile.total_constraints(),
-    );
+
+    // Capture per-hash-kind constraint totals for the reduction ratios.
+    let mut measured: Vec<(&'static str, usize, usize, usize)> = Vec::new();
+
+    for (label, hash_kind) in benchmark_hash_kinds() {
+        let profile = PallasProofSkeleton::circuit_profile(&public_inputs, hash_kind)
+            .expect("profile");
+        let total = profile.total_constraints();
+        print_circuit_profile_row("single-proof", label, "mask", profile.mask, total);
+        print_circuit_profile_row("single-proof", label, "vesta-dh", profile.vesta_dh, total);
+        measured.push((
+            label,
+            profile.mask.constraints,
+            profile.vesta_dh.constraints,
+            total,
+        ));
+    }
+
+    emit_ab_constraint_ratios(&measured);
+}
+
+/// Print Poseidon-vs-Blake2b constraint-reduction ratios to stderr.
+///
+/// Ratios are blake2b/poseidon for the mask circuit, the vesta-dh circuit, and
+/// the linked total. A value above 1.0 means Poseidon uses fewer constraints.
+/// Emitted only when both kinds were measured (i.e. `poseidon-mask` is on).
+fn emit_ab_constraint_ratios(measured: &[(&'static str, usize, usize, usize)]) {
+    let blake = measured.iter().find(|row| row.0 == "blake2b");
+    let poseidon = measured.iter().find(|row| row.0 == "poseidon");
+    if let (Some(blake), Some(poseidon)) = (blake, poseidon) {
+        let mask_reduction = ratio(blake.1 as u128, poseidon.1 as u128);
+        let vesta_reduction = ratio(blake.2 as u128, poseidon.2 as u128);
+        let total_reduction = ratio(blake.3 as u128, poseidon.3 as u128);
+        eprintln!(
+            "pallas_bench: A/B constraint reduction (blake2b/poseidon) mask={mask_reduction:.3}x (blake2b={} poseidon={}), vesta-dh={vesta_reduction:.3}x (blake2b={} poseidon={}), total={total_reduction:.3}x (blake2b={} poseidon={})",
+            blake.1, poseidon.1, blake.2, poseidon.2, blake.3, poseidon.3,
+        );
+    }
 }
 
 fn print_circuit_profile_row(
     scenario: &str,
+    hash: &str,
     circuit: &str,
     profile: golden_proofs::PallasCircuitProfile,
     total_constraints: usize,
 ) {
     println!(
-        "{scenario},{circuit},{committed_vars},{internal_vars},{constraints},{columns},{padded_vars},{ipa_log_len},{total_constraints}",
+        "{scenario},{hash},{circuit},{committed_vars},{internal_vars},{constraints},{columns},{padded_vars},{ipa_log_len},{total_constraints}",
         committed_vars = profile.committed_vars,
         internal_vars = profile.internal_vars,
         constraints = profile.constraints,
@@ -442,7 +527,19 @@ fn coefficients_for(dealer_index: u64, threshold: usize) -> Vec<u64> {
         .collect()
 }
 
+/// Build the default ([`MaskHashKind::Blake2b`]) single-proof case.
+///
+/// Kept for the `--circuit-profile` path and to preserve the prior public
+/// inputs used by existing invocations.
 fn single_proof_case() -> (ProofPublicInputs, ProofWitness) {
+    single_proof_case_for(MaskHashKind::Blake2b)
+}
+
+/// Build a single-proof case whose mask commitment matches `hash_kind`.
+///
+/// The mask is derived with the same hash-to-field relation the prover and
+/// verifier enforce for `hash_kind`, so the witness validates under that kind.
+fn single_proof_case_for(hash_kind: MaskHashKind) -> (ProofPublicInputs, ProofWitness) {
     let dealer_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(13));
     let participant_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(29));
     let public_polynomial = commit_polynomial(&Polynomial::new(vec![
@@ -450,7 +547,7 @@ fn single_proof_case() -> (ProofPublicInputs, ProofWitness) {
         PallasScalar::from_u64(7),
     ]));
     let shared_point = dealer_secret.diffie_hellman(participant_secret.public_key());
-    let mask = derive_mask(shared_point, &{
+    let transcript = {
         let inputs = ProofPublicInputs {
             session_id: b"proof-smoke-bench-session".to_vec(),
             dealer_id: benchmark_id(10),
@@ -461,7 +558,8 @@ fn single_proof_case() -> (ProofPublicInputs, ProofWitness) {
             public_polynomial: public_polynomial.clone(),
         };
         inputs.mask_transcript()
-    });
+    };
+    let mask = mask_for_hash_kind(hash_kind, shared_point, &transcript);
     let public_inputs = ProofPublicInputs {
         session_id: b"proof-smoke-bench-session".to_vec(),
         dealer_id: benchmark_id(10),
@@ -477,6 +575,21 @@ fn single_proof_case() -> (ProofPublicInputs, ProofWitness) {
         mask,
     };
     (public_inputs, witness)
+}
+
+/// Derive the mask scalar for `hash_kind` from the shared secret and transcript.
+fn mask_for_hash_kind(
+    hash_kind: MaskHashKind,
+    shared_point: golden_pallas::SharedSecret,
+    transcript: &[u8],
+) -> PallasScalar {
+    match hash_kind {
+        MaskHashKind::Blake2b => derive_mask(shared_point, transcript),
+        #[cfg(feature = "poseidon-mask")]
+        MaskHashKind::Poseidon => {
+            golden_proofs::poseidon_mask_from_shared(shared_point.point(), transcript)
+        }
+    }
 }
 
 fn benchmark_id(value: u64) -> ParticipantId {
@@ -504,6 +617,7 @@ mod tests {
         assert!(SINGLE_PROOF_CSV_HEADER.contains("proof_bytes"));
         assert!(SINGLE_PROOF_CSV_HEADER.contains("prove_rss_bytes"));
         assert!(SINGLE_PROOF_CSV_HEADER.contains("verify_micros"));
+        assert!(SINGLE_PROOF_CSV_HEADER.contains("hash"));
     }
 
     #[test]
@@ -511,6 +625,22 @@ mod tests {
         assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("circuit"));
         assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("constraints"));
         assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("ipa_log_len"));
+        assert!(CIRCUIT_PROFILE_CSV_HEADER.contains("hash"));
+    }
+
+    #[test]
+    fn benchmark_hash_kinds_default_to_blake2b_first() {
+        let kinds = super::benchmark_hash_kinds();
+        assert_eq!(kinds[0].0, "blake2b");
+        #[cfg(feature = "poseidon-mask")]
+        {
+            assert_eq!(kinds.len(), 2);
+            assert_eq!(kinds[1].0, "poseidon");
+        }
+        #[cfg(not(feature = "poseidon-mask"))]
+        {
+            assert_eq!(kinds.len(), 1);
+        }
     }
 
     #[test]

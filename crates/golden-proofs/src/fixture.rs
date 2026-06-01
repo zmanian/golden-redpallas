@@ -3,8 +3,8 @@
 use blake2b_simd::Params;
 
 use crate::{
-    MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
-    witness::validate_witness,
+    MaskHashKind, MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem,
+    ProofWitness, witness::validate_witness,
 };
 
 const BACKEND: &str = "golden-fixture-proof/v0";
@@ -19,9 +19,11 @@ const DIGEST_DOMAIN: &[u8] = b"GoldenRedPallas/FixtureProof/v0";
 pub struct FixtureProofSystem;
 
 impl ProofSystem for FixtureProofSystem {
-    fn prove(
+    /// The fixture backend ignores `hash_kind`; it is not a real hash circuit.
+    fn prove_with_hash(
         public_inputs: &ProofPublicInputs,
         witness: &ProofWitness,
+        _hash_kind: MaskHashKind,
     ) -> Result<MaskProof, ProofError> {
         validate_witness(public_inputs, witness)?;
         Ok(MaskProof {
@@ -30,7 +32,12 @@ impl ProofSystem for FixtureProofSystem {
         })
     }
 
-    fn verify(public_inputs: &ProofPublicInputs, proof: &MaskProof) -> Result<(), ProofError> {
+    /// The fixture backend ignores `hash_kind`; it is not a real hash circuit.
+    fn verify_with_hash(
+        public_inputs: &ProofPublicInputs,
+        proof: &MaskProof,
+        _hash_kind: MaskHashKind,
+    ) -> Result<(), ProofError> {
         if proof.backend != BACKEND {
             return Err(ProofError::BackendMismatch);
         }
