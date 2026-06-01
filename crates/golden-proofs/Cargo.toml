@@ -28,6 +28,9 @@ rayon = "1.11"
 default = []
 pallas-backend = []
 poseidon-mask = ["pallas-backend", "dep:ark-crypto-primitives"]
+# Algebraic eVRF mask: the affine x-coordinate of the DH shared Vesta point.
+# No in-circuit hash, so no extra external dependency is required.
+evrf-mask = ["pallas-backend"]
 
 [[example]]
 name = "pallas_bench"

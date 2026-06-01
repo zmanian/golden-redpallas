@@ -169,6 +169,36 @@ pub mod poseidon {
     }
 }
 
+/// Derive the algebraic eVRF mask from a Diffie-Hellman shared Vesta point.
+///
+/// The mask is the affine x-coordinate of `shared_point`. Under the Pasta
+/// cycle the Vesta base field `Fq` is identical to the Pallas scalar field, so
+/// [`VestaPoint::affine_coordinates`] reinterprets that x-coordinate as a
+/// [`PallasScalar`] with no hashing and no modular reduction — it is an
+/// identity reinterpretation, not a reduction.
+///
+/// Because Diffie-Hellman is symmetric (`sk_d * PK_p == sk_p * PK_d` as the
+/// same Vesta point), the dealer and participant recompute the identical mask,
+/// which is what enables DKG unmasking without a shared hash transcript. The
+/// mask is intentionally a pure function of the shared point: the transcript is
+/// not an input.
+///
+/// The identity-point case (no affine coordinates) maps defensively to
+/// [`PallasScalar::ZERO`]; a valid DKG never produces the identity shared
+/// point.
+///
+/// # Soundness note
+///
+/// The identity `Fq == Pallas scalar field` is a Pasta-cycle invariant. If the
+/// curve pair is ever changed, this reinterpretation must be revisited.
+#[cfg(feature = "evrf-mask")]
+#[must_use]
+pub fn evrf_mask_from_shared(shared_point: golden_pallas::VestaPoint) -> PallasScalar {
+    shared_point
+        .affine_coordinates()
+        .map_or(PallasScalar::ZERO, |(x, _y)| x)
+}
+
 const BACKEND: &str = "golden-pallas-proof-skeleton/v7";
 const CHALLENGE_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofChallenge/v0";
 const GENERATOR_DOMAIN: &str = "GoldenRedPallas/PallasProofGenerator/v1";
@@ -295,6 +325,15 @@ impl PallasMaskHashTrace {
                 let mask = ark_fq_to_pallas_scalar(field);
                 mask_digest[..32].copy_from_slice(&mask.to_bytes());
                 mask
+            }
+            #[cfg(feature = "evrf-mask")]
+            MaskHashKind::Evrf => {
+                // Algebraic mask: affine x of the DH shared point. No hash, so
+                // the 64-byte digest slot stays zero.
+                witness
+                    .shared_point
+                    .affine_coordinates()
+                    .map_or(PallasScalar::ZERO, |(x, _y)| x)
             }
         };
 
@@ -1077,23 +1116,36 @@ fn synthesize_mask_hash_r1cs(
     enforce_vesta_curve_equation(&shared_x_var, &shared_y_var)
         .map_err(|_| ProofError::InvalidWitness)?;
 
-    let shared_point_bytes = compressed_vesta_point_bytes(&shared_x_var, &shared_y_var)
-        .map_err(|_| ProofError::InvalidWitness)?;
-    let mut message = UInt8::constant_vec(domains::MASK_TO_FIELD);
-    message.extend(shared_point_bytes);
-    message.extend(UInt8::constant_vec(&public_inputs.mask_transcript()));
     match hash_kind {
         MaskHashKind::Blake2b => {
+            let message = mask_hash_message(public_inputs, &shared_x_var, &shared_y_var)
+                .map_err(|_| ProofError::InvalidWitness)?;
             let digest = blake2b_512_circuit(&message).map_err(|_| ProofError::InvalidWitness)?;
             enforce_digest_reduces_to_mask(&digest, &mask_var)
                 .map_err(|_| ProofError::InvalidWitness)?;
         }
         #[cfg(feature = "poseidon-mask")]
         MaskHashKind::Poseidon => {
+            let message = mask_hash_message(public_inputs, &shared_x_var, &shared_y_var)
+                .map_err(|_| ProofError::InvalidWitness)?;
             let squeezed = poseidon::poseidon_hash_circuit(cs.clone(), &message)
                 .map_err(|_| ProofError::InvalidWitness)?;
             squeezed
                 .enforce_equal(&mask_var)
+                .map_err(|_| ProofError::InvalidWitness)?;
+        }
+        #[cfg(feature = "evrf-mask")]
+        MaskHashKind::Evrf => {
+            // Algebraic eVRF mask: the mask is the affine x-coordinate of the
+            // DH shared point. `shared_x_var` is already bound to lie on the
+            // Vesta curve by `enforce_vesta_curve_equation` above, and its
+            // public commitment (`shared_x_index`) is the SAME committed value
+            // the vesta-dh circuit proves equals the x of `sk * PK`. The single
+            // added constraint `mask_var - shared_x_var == 0` therefore binds
+            // the mask to the x of the point proven to be the DH product, not a
+            // free witness. No in-circuit hash and no message bytes are built.
+            mask_var
+                .enforce_equal(&shared_x_var)
                 .map_err(|_| ProofError::InvalidWitness)?;
         }
     }
@@ -1126,6 +1178,28 @@ fn synthesize_mask_hash_r1cs(
         shared_x_index,
         shared_y_index,
     })
+}
+
+/// Assemble the in-circuit hash preimage (domain || compressed shared point ||
+/// transcript) consumed by the Blake2b and Poseidon mask arms.
+///
+/// The eVRF arm never calls this: its mask is bound directly to `shared_x_var`,
+/// so it allocates no message bytes and pays no compressed-point serialization
+/// cost.
+#[allow(
+    clippy::similar_names,
+    reason = "shared_x_var and shared_y_var are the conventional coordinate names"
+)]
+fn mask_hash_message(
+    public_inputs: &ProofPublicInputs,
+    shared_x_var: &FpVar<ark_vesta::Fq>,
+    shared_y_var: &FpVar<ark_vesta::Fq>,
+) -> Result<Vec<UInt8<ark_vesta::Fq>>, SynthesisError> {
+    let shared_point_bytes = compressed_vesta_point_bytes(shared_x_var, shared_y_var)?;
+    let mut message = UInt8::constant_vec(domains::MASK_TO_FIELD);
+    message.extend(shared_point_bytes);
+    message.extend(UInt8::constant_vec(&public_inputs.mask_transcript()));
+    Ok(message)
 }
 
 fn enforce_vesta_curve_equation(
@@ -1673,6 +1747,21 @@ fn verify_mask_hash_bytes(
             let mut expected_digest = [0_u8; 64];
             expected_digest[..32].copy_from_slice(&expected_mask.to_bytes());
             if mask_digest != expected_digest {
+                return Err(ProofError::InvalidProof);
+            }
+            Ok(expected_mask)
+        }
+        #[cfg(feature = "evrf-mask")]
+        MaskHashKind::Evrf => {
+            // The mask must equal the affine x-coordinate of the decoded shared
+            // point, and the digest slot must be all zero (no hash was run).
+            let point = VestaPoint::from_bytes(shared_point).ok_or(ProofError::InvalidProof)?;
+            let (expected_mask, _y) =
+                point.affine_coordinates().ok_or(ProofError::InvalidProof)?;
+            if mask != expected_mask {
+                return Err(ProofError::InvalidProof);
+            }
+            if mask_digest != [0_u8; 64] {
                 return Err(ProofError::InvalidProof);
             }
             Ok(expected_mask)
@@ -2912,4 +3001,199 @@ mod poseidon_tests {
     /// fixed known-answer preimage. Regenerated once, then locked here.
     const POSEIDON_MASK_KAT_HEX: &str =
         "bbd0d35cd8c8ffcce52538b01d6666ef3775fc5e8d405b20375e570355e90717";
+}
+
+#[cfg(all(test, feature = "evrf-mask"))]
+mod evrf_tests {
+    use golden_core::{FieldElement, ParticipantId, Polynomial};
+    use golden_pallas::{
+        HelperSecretKey, PallasPoint, PallasScalar, VestaScalar, commit_polynomial,
+    };
+
+    use super::{PallasProofSkeleton, evrf_mask_from_shared};
+    use crate::{
+        MaskHashKind, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
+        witness::validate_witness_with_hash,
+    };
+
+    fn id(value: u64) -> ParticipantId {
+        ParticipantId::new(value).expect("non-zero id")
+    }
+
+    /// Build a fixed witness whose mask is the affine x of the DH shared point.
+    fn evrf_case() -> (ProofPublicInputs, ProofWitness) {
+        let dealer_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(13));
+        let participant_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(29));
+        let public_polynomial = commit_polynomial(&Polynomial::new(vec![
+            PallasScalar::from_u64(5),
+            PallasScalar::from_u64(7),
+        ]));
+        let shared = dealer_secret.diffie_hellman(participant_secret.public_key());
+        let shared_point = shared.point();
+        let mask = evrf_mask_from_shared(shared_point);
+        let public_inputs = ProofPublicInputs {
+            session_id: b"evrf-mask-session".to_vec(),
+            dealer_id: id(10),
+            participant_id: id(1),
+            dealer_public: dealer_secret.public_key(),
+            participant_public: participant_secret.public_key(),
+            mask_commitment: PallasPoint::generator_mul(mask),
+            public_polynomial,
+        };
+        let witness = ProofWitness {
+            dealer_secret: dealer_secret.scalar(),
+            shared_point,
+            mask,
+        };
+        (public_inputs, witness)
+    }
+
+    #[test]
+    fn evrf_mask_round_trips_through_prove_and_verify() {
+        let (public_inputs, witness) = evrf_case();
+
+        // Native mask must equal x(shared).
+        let (x, _y) = witness
+            .shared_point
+            .affine_coordinates()
+            .expect("shared point is affine");
+        assert_eq!(witness.mask, x);
+
+        let proof =
+            PallasProofSkeleton::prove_with_hash(&public_inputs, &witness, MaskHashKind::Evrf)
+                .expect("evrf proof");
+        assert_eq!(
+            PallasProofSkeleton::verify_with_hash(&public_inputs, &proof, MaskHashKind::Evrf),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn evrf_mask_equals_dh_symmetric_x_coordinate() {
+        let dealer_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(13));
+        let participant_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(29));
+
+        // shared_d = sk_d * PK_p ; shared_p = sk_p * PK_d.
+        let shared_d = dealer_secret.diffie_hellman(participant_secret.public_key());
+        let shared_p = participant_secret.diffie_hellman(dealer_secret.public_key());
+
+        assert_eq!(shared_d.point(), shared_p.point());
+        assert_eq!(
+            evrf_mask_from_shared(shared_d.point()),
+            evrf_mask_from_shared(shared_p.point()),
+            "x(sk_d*PK_p) must equal x(sk_p*PK_d) for DH unmask symmetry"
+        );
+    }
+
+    #[test]
+    fn evrf_tampered_mask_witness_is_rejected() {
+        let (public_inputs, mut witness) = evrf_case();
+        // A free mask value not equal to shared_x.
+        witness.mask += PallasScalar::ONE;
+
+        assert_eq!(
+            validate_witness_with_hash(&public_inputs, &witness, MaskHashKind::Evrf),
+            Err(ProofError::InvalidWitness)
+        );
+        assert_eq!(
+            PallasProofSkeleton::prove_with_hash(&public_inputs, &witness, MaskHashKind::Evrf),
+            Err(ProofError::InvalidWitness)
+        );
+    }
+}
+
+#[cfg(all(test, feature = "poseidon-mask", feature = "evrf-mask"))]
+mod evrf_vs_poseidon_tests {
+    use golden_core::{FieldElement, ParticipantId, Polynomial};
+    use golden_pallas::{
+        HelperSecretKey, PallasPoint, PallasScalar, VestaScalar, commit_polynomial,
+    };
+
+    use super::{PallasProofSkeleton, ark_fq_to_pallas_scalar, evrf_mask_from_shared};
+    use crate::{MaskHashKind, ProofPublicInputs, ProofWitness};
+
+    fn id(value: u64) -> ParticipantId {
+        ParticipantId::new(value).expect("non-zero id")
+    }
+
+    fn base_inputs() -> (HelperSecretKey, HelperSecretKey, ProofPublicInputs) {
+        let dealer_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(13));
+        let participant_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(29));
+        let public_polynomial = commit_polynomial(&Polynomial::new(vec![
+            PallasScalar::from_u64(5),
+            PallasScalar::from_u64(7),
+        ]));
+        let public_inputs = ProofPublicInputs {
+            session_id: b"evrf-vs-poseidon".to_vec(),
+            dealer_id: id(10),
+            participant_id: id(1),
+            dealer_public: dealer_secret.public_key(),
+            participant_public: participant_secret.public_key(),
+            mask_commitment: PallasPoint::identity(),
+            public_polynomial,
+        };
+        (dealer_secret, participant_secret, public_inputs)
+    }
+
+    #[test]
+    fn evrf_mask_circuit_has_far_fewer_constraints_than_poseidon() {
+        let (dealer_secret, participant_secret, public_inputs) = base_inputs();
+        let shared = dealer_secret.diffie_hellman(participant_secret.public_key());
+        let shared_point = shared.point();
+
+        // eVRF mask circuit profile.
+        let evrf_mask = evrf_mask_from_shared(shared_point);
+        let evrf_inputs = ProofPublicInputs {
+            mask_commitment: PallasPoint::generator_mul(evrf_mask),
+            ..public_inputs.clone()
+        };
+        let _evrf_witness = ProofWitness {
+            dealer_secret: dealer_secret.scalar(),
+            shared_point,
+            mask: evrf_mask,
+        };
+        let evrf_profile =
+            PallasProofSkeleton::circuit_profile(&evrf_inputs, MaskHashKind::Evrf)
+                .expect("evrf profile");
+
+        // Poseidon mask circuit profile.
+        let transcript = public_inputs.mask_transcript();
+        let poseidon_field = super::poseidon::poseidon_hash_native(
+            golden_pallas::domains::MASK_TO_FIELD,
+            &shared_point.to_bytes(),
+            &transcript,
+        );
+        let poseidon_mask = ark_fq_to_pallas_scalar(poseidon_field);
+        let poseidon_inputs = ProofPublicInputs {
+            mask_commitment: PallasPoint::generator_mul(poseidon_mask),
+            ..public_inputs.clone()
+        };
+        let poseidon_profile =
+            PallasProofSkeleton::circuit_profile(&poseidon_inputs, MaskHashKind::Poseidon)
+                .expect("poseidon profile");
+
+        // Blake2b for context.
+        let blake_profile =
+            PallasProofSkeleton::circuit_profile(&public_inputs, MaskHashKind::Blake2b)
+                .expect("blake profile");
+
+        let evrf_c = evrf_profile.mask.constraints;
+        let poseidon_c = poseidon_profile.mask.constraints;
+        let blake_c = blake_profile.mask.constraints;
+
+        assert!(
+            evrf_c < poseidon_c,
+            "evrf mask constraints ({evrf_c}) must be far fewer than poseidon ({poseidon_c})"
+        );
+        assert!(
+            evrf_c < blake_c,
+            "evrf mask constraints ({evrf_c}) must be far fewer than blake2b ({blake_c})"
+        );
+        // eVRF should collapse to only the Vesta curve equation (a few
+        // constraints) plus one equality: low double digits at most.
+        assert!(
+            evrf_c < 100,
+            "evrf mask constraints ({evrf_c}) should be single/low-double digits"
+        );
+    }
 }

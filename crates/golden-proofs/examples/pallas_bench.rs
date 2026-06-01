@@ -20,20 +20,18 @@ const CIRCUIT_PROFILE_CSV_HEADER: &str = "scenario,hash,circuit,committed_vars,i
 
 /// Hash kinds the A/B benchmark walks over for one run.
 ///
-/// `Blake2b` is always present. `Poseidon` only exists when the crate is built
-/// with the `poseidon-mask` feature, so the side-by-side rows are feature-gated.
+/// `Blake2b` is always present. `Poseidon` only exists with the `poseidon-mask`
+/// feature and `Evrf` only with the `evrf-mask` feature, so the side-by-side
+/// rows are feature-gated. Any subset of the optional features compiles.
 fn benchmark_hash_kinds() -> Vec<(&'static str, MaskHashKind)> {
+    // `mut` is unused when no optional mask feature is enabled.
+    #[allow(unused_mut, reason = "kinds is only mutated when optional mask features are enabled")]
+    let mut kinds = vec![("blake2b", MaskHashKind::Blake2b)];
     #[cfg(feature = "poseidon-mask")]
-    {
-        vec![
-            ("blake2b", MaskHashKind::Blake2b),
-            ("poseidon", MaskHashKind::Poseidon),
-        ]
-    }
-    #[cfg(not(feature = "poseidon-mask"))]
-    {
-        vec![("blake2b", MaskHashKind::Blake2b)]
-    }
+    kinds.push(("poseidon", MaskHashKind::Poseidon));
+    #[cfg(feature = "evrf-mask")]
+    kinds.push(("evrf", MaskHashKind::Evrf));
+    kinds
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,6 +285,25 @@ fn emit_ab_speedup_ratios(measured: &[(&'static str, u128, u128, usize)]) {
             blake.3, poseidon.3,
         );
     }
+
+    // Headline: eVRF vs Poseidon (and eVRF vs Blake2b for context).
+    let evrf = measured.iter().find(|row| row.0 == "evrf");
+    if let (Some(evrf), Some(poseidon)) = (evrf, poseidon) {
+        let prove_speedup = ratio(poseidon.1, evrf.1);
+        let verify_speedup = ratio(poseidon.2, evrf.2);
+        eprintln!(
+            "pallas_bench: headline prove speedup (poseidon/evrf) = {prove_speedup:.3}x, verify speedup = {verify_speedup:.3}x, proof_bytes poseidon={} evrf={}",
+            poseidon.3, evrf.3,
+        );
+    }
+    if let (Some(blake), Some(evrf)) = (blake, evrf) {
+        let prove_speedup = ratio(blake.1, evrf.1);
+        let verify_speedup = ratio(blake.2, evrf.2);
+        eprintln!(
+            "pallas_bench: context prove speedup (blake2b/evrf) = {prove_speedup:.3}x, verify speedup = {verify_speedup:.3}x, proof_bytes blake2b={} evrf={}",
+            blake.3, evrf.3,
+        );
+    }
 }
 
 #[allow(
@@ -340,6 +357,26 @@ fn emit_ab_constraint_ratios(measured: &[(&'static str, usize, usize, usize)]) {
         eprintln!(
             "pallas_bench: A/B constraint reduction (blake2b/poseidon) mask={mask_reduction:.3}x (blake2b={} poseidon={}), vesta-dh={vesta_reduction:.3}x (blake2b={} poseidon={}), total={total_reduction:.3}x (blake2b={} poseidon={})",
             blake.1, poseidon.1, blake.2, poseidon.2, blake.3, poseidon.3,
+        );
+    }
+
+    // Headline: the eVRF mask circuit collapses to near-zero hash constraints,
+    // shown against Poseidon (primary) and Blake2b (context).
+    let evrf = measured.iter().find(|row| row.0 == "evrf");
+    if let (Some(evrf), Some(poseidon)) = (evrf, poseidon) {
+        let mask_reduction = ratio(poseidon.1 as u128, evrf.1 as u128);
+        let total_reduction = ratio(poseidon.3 as u128, evrf.3 as u128);
+        eprintln!(
+            "pallas_bench: headline constraint reduction (poseidon/evrf) mask={mask_reduction:.3}x (poseidon={} evrf={}), total={total_reduction:.3}x (poseidon={} evrf={})",
+            poseidon.1, evrf.1, poseidon.3, evrf.3,
+        );
+    }
+    if let (Some(blake), Some(evrf)) = (blake, evrf) {
+        let mask_reduction = ratio(blake.1 as u128, evrf.1 as u128);
+        let total_reduction = ratio(blake.3 as u128, evrf.3 as u128);
+        eprintln!(
+            "pallas_bench: context constraint reduction (blake2b/evrf) mask={mask_reduction:.3}x (blake2b={} evrf={}), total={total_reduction:.3}x (blake2b={} evrf={})",
+            blake.1, evrf.1, blake.3, evrf.3,
         );
     }
 }
@@ -589,6 +626,8 @@ fn mask_for_hash_kind(
         MaskHashKind::Poseidon => {
             golden_proofs::poseidon_mask_from_shared(shared_point.point(), transcript)
         }
+        #[cfg(feature = "evrf-mask")]
+        MaskHashKind::Evrf => golden_proofs::evrf_mask_from_shared(shared_point.point()),
     }
 }
 
@@ -632,15 +671,23 @@ mod tests {
     fn benchmark_hash_kinds_default_to_blake2b_first() {
         let kinds = super::benchmark_hash_kinds();
         assert_eq!(kinds[0].0, "blake2b");
+
+        let mut expected_len = 1;
+        let mut next = 1;
         #[cfg(feature = "poseidon-mask")]
         {
-            assert_eq!(kinds.len(), 2);
-            assert_eq!(kinds[1].0, "poseidon");
+            assert_eq!(kinds[next].0, "poseidon");
+            next += 1;
+            expected_len += 1;
         }
-        #[cfg(not(feature = "poseidon-mask"))]
+        #[cfg(feature = "evrf-mask")]
         {
-            assert_eq!(kinds.len(), 1);
+            assert_eq!(kinds[next].0, "evrf");
+            next += 1;
+            expected_len += 1;
         }
+        let _ = next;
+        assert_eq!(kinds.len(), expected_len);
     }
 
     #[test]

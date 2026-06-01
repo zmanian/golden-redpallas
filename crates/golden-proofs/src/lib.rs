@@ -29,6 +29,8 @@ pub use pallas::{
 };
 #[cfg(feature = "poseidon-mask")]
 pub use pallas::poseidon::poseidon_mask_from_shared;
+#[cfg(feature = "evrf-mask")]
+pub use pallas::evrf_mask_from_shared;
 pub use types::{
     MaskHashKind, MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem,
     ProofWitness,
