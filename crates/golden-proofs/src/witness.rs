@@ -51,19 +51,12 @@ pub(crate) fn validate_witness_with_hash(
     Ok(())
 }
 
-#[cfg(not(feature = "poseidon-mask"))]
-fn expected_mask(
-    public_inputs: &ProofPublicInputs,
-    witness: &ProofWitness,
-    _hash_kind: MaskHashKind,
-) -> golden_pallas::PallasScalar {
-    derive_mask(
-        SharedSecret::from_point(witness.shared_point),
-        &public_inputs.mask_transcript(),
-    )
-}
-
-#[cfg(feature = "poseidon-mask")]
+/// Recompute the mask a valid witness must carry for the given `hash_kind`.
+///
+/// Blake2b is always available; the Poseidon and eVRF arms are feature-gated.
+/// The match stays exhaustive for every enabled subset of those features
+/// because each non-default arm is cfg-gated to its own feature, exactly like
+/// the [`MaskHashKind`] variants themselves.
 fn expected_mask(
     public_inputs: &ProofPublicInputs,
     witness: &ProofWitness,
@@ -74,6 +67,7 @@ fn expected_mask(
             SharedSecret::from_point(witness.shared_point),
             &public_inputs.mask_transcript(),
         ),
+        #[cfg(feature = "poseidon-mask")]
         MaskHashKind::Poseidon => {
             let field = crate::pallas::poseidon::poseidon_hash_native(
                 golden_pallas::domains::MASK_TO_FIELD,
@@ -82,5 +76,7 @@ fn expected_mask(
             );
             crate::pallas::ark_fq_to_pallas_scalar(field)
         }
+        #[cfg(feature = "evrf-mask")]
+        MaskHashKind::Evrf => crate::pallas::evrf_mask_from_shared(witness.shared_point),
     }
 }

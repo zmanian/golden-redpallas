@@ -207,6 +207,11 @@ pub enum MaskHashKind {
     /// `ark-crypto-primitives` Poseidon sponge over the circuit field.
     #[cfg(feature = "poseidon-mask")]
     Poseidon,
+    /// Algebraic eVRF mask: the affine x-coordinate of the Diffie-Hellman
+    /// shared Vesta point. There is no in-circuit symmetric hash; the mask is
+    /// bound directly to the curve-constrained shared-point x-coordinate.
+    #[cfg(feature = "evrf-mask")]
+    Evrf,
 }
 
 /// Proof-system interface for one Golden mask proof.
