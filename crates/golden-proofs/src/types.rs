@@ -194,16 +194,57 @@ pub struct ProofBatchItem<'a> {
     pub proof: &'a MaskProof,
 }
 
+/// Selector for the mask hash-to-field algorithm used by a backend.
+///
+/// The default is [`MaskHashKind::Blake2b`], preserving the existing proof
+/// behavior. The [`MaskHashKind::Poseidon`] arm only exists when the crate is
+/// built with the `poseidon-mask` feature.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MaskHashKind {
+    /// In-tree Blake2b-512 hash-to-field relation (default).
+    #[default]
+    Blake2b,
+    /// `ark-crypto-primitives` Poseidon sponge over the circuit field.
+    #[cfg(feature = "poseidon-mask")]
+    Poseidon,
+}
+
 /// Proof-system interface for one Golden mask proof.
 pub trait ProofSystem {
+    /// Create a proof using the requested mask hash algorithm.
+    fn prove_with_hash(
+        public_inputs: &ProofPublicInputs,
+        witness: &ProofWitness,
+        hash_kind: MaskHashKind,
+    ) -> Result<MaskProof, ProofError>;
+
+    /// Verify a proof against public inputs using the requested mask hash
+    /// algorithm.
+    fn verify_with_hash(
+        public_inputs: &ProofPublicInputs,
+        proof: &MaskProof,
+        hash_kind: MaskHashKind,
+    ) -> Result<(), ProofError>;
+
     /// Create a proof for the provided public inputs and witness.
+    ///
+    /// Delegates to [`ProofSystem::prove_with_hash`] with the default
+    /// ([`MaskHashKind::Blake2b`]) hash algorithm, so existing callers are
+    /// unchanged.
     fn prove(
         public_inputs: &ProofPublicInputs,
         witness: &ProofWitness,
-    ) -> Result<MaskProof, ProofError>;
+    ) -> Result<MaskProof, ProofError> {
+        Self::prove_with_hash(public_inputs, witness, MaskHashKind::default())
+    }
 
     /// Verify a proof against public inputs.
-    fn verify(public_inputs: &ProofPublicInputs, proof: &MaskProof) -> Result<(), ProofError>;
+    ///
+    /// Delegates to [`ProofSystem::verify_with_hash`] with the default
+    /// ([`MaskHashKind::Blake2b`]) hash algorithm.
+    fn verify(public_inputs: &ProofPublicInputs, proof: &MaskProof) -> Result<(), ProofError> {
+        Self::verify_with_hash(public_inputs, proof, MaskHashKind::default())
+    }
 
     /// Verify multiple proofs together.
     ///

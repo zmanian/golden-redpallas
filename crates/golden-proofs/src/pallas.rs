@@ -32,7 +32,7 @@ use rand_core::{CryptoRng, OsRng, RngCore};
 
 use crate::{
     MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
-    witness::validate_witness,
+    witness::validate_witness_with_hash,
 };
 
 pub mod circuit;
@@ -42,6 +42,132 @@ pub use circuit::{
     PallasCircuitWitness, PallasR1cs, PallasSparseMatrix,
 };
 pub use ipa::{PallasIpaClaim, PallasIpaProof, PallasIpaSetup, PallasIpaWitness};
+
+pub use crate::MaskHashKind;
+
+#[cfg(feature = "poseidon-mask")]
+pub use poseidon::poseidon_mask_config;
+
+/// Poseidon mask hash-to-field relation built on `ark-crypto-primitives` 0.5.
+///
+/// The native [`PoseidonSponge`] and the in-circuit [`PoseidonSpongeVar`] share a
+/// single memoized [`PoseidonConfig`] over `ark_vesta::Fq` and absorb the
+/// identical preimage bytes, so the squeezed native and circuit field elements
+/// are guaranteed equal.
+#[cfg(feature = "poseidon-mask")]
+pub mod poseidon {
+    use std::sync::OnceLock;
+
+    use ark_crypto_primitives::sponge::{
+        CryptographicSponge,
+        constraints::CryptographicSpongeVar,
+        poseidon::{
+            PoseidonConfig, PoseidonSponge, constraints::PoseidonSpongeVar,
+            traits::find_poseidon_ark_and_mds,
+        },
+    };
+    use ark_r1cs_std::{fields::fp::FpVar, uint8::UInt8};
+    use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
+
+    /// Number of full rounds in the mask Poseidon permutation.
+    pub const POSEIDON_FULL_ROUNDS: usize = 8;
+    /// Number of partial rounds in the mask Poseidon permutation.
+    pub const POSEIDON_PARTIAL_ROUNDS: usize = 56;
+    /// S-box exponent for the mask Poseidon permutation.
+    pub const POSEIDON_ALPHA: u64 = 5;
+    /// Sponge rate (field elements) for the mask Poseidon permutation.
+    pub const POSEIDON_RATE: usize = 2;
+    /// Sponge capacity (field elements) for the mask Poseidon permutation.
+    pub const POSEIDON_CAPACITY: usize = 1;
+    /// Bit size of the `ark_vesta::Fq` prime modulus used by the generator.
+    const POSEIDON_PRIME_BITS: u64 = 255;
+    /// Number of Grain-LFSR MDS matrices to skip during constant generation.
+    const POSEIDON_SKIP_MATRICES: u64 = 0;
+
+    static MASK_CONFIG: OnceLock<PoseidonConfig<ark_vesta::Fq>> = OnceLock::new();
+
+    /// Return the memoized Poseidon configuration for the mask relation.
+    ///
+    /// The `(ark, mds)` constants are generated deterministically once via the
+    /// arkworks Grain-LFSR reference generator and cached so the native sponge
+    /// and the R1CS gadget always share one identical parameter set.
+    #[must_use]
+    pub fn poseidon_mask_config() -> &'static PoseidonConfig<ark_vesta::Fq> {
+        MASK_CONFIG.get_or_init(|| {
+            let (ark, mds) = find_poseidon_ark_and_mds::<ark_vesta::Fq>(
+                POSEIDON_PRIME_BITS,
+                POSEIDON_RATE,
+                POSEIDON_FULL_ROUNDS as u64,
+                POSEIDON_PARTIAL_ROUNDS as u64,
+                POSEIDON_SKIP_MATRICES,
+            );
+            // NOTE: `PoseidonConfig::new` takes `mds` BEFORE `ark`, which is the
+            // reverse of the `(ark, mds)` tuple returned by the generator.
+            PoseidonConfig::new(
+                POSEIDON_FULL_ROUNDS,
+                POSEIDON_PARTIAL_ROUNDS,
+                POSEIDON_ALPHA,
+                mds,
+                ark,
+                POSEIDON_RATE,
+                POSEIDON_CAPACITY,
+            )
+        })
+    }
+
+    /// Squeeze one mask field element in-circuit from the preimage bytes.
+    ///
+    /// The same message byte vector assembled for the Blake2b path is absorbed
+    /// into a [`PoseidonSpongeVar`]; the single squeezed [`FpVar`] is the mask.
+    pub fn poseidon_hash_circuit(
+        cs: ConstraintSystemRef<ark_vesta::Fq>,
+        message: &[UInt8<ark_vesta::Fq>],
+    ) -> Result<FpVar<ark_vesta::Fq>, SynthesisError> {
+        let mut sponge = PoseidonSpongeVar::<ark_vesta::Fq>::new(cs, poseidon_mask_config());
+        sponge.absorb(&message)?;
+        let squeezed = sponge.squeeze_field_elements(1)?;
+        squeezed.into_iter().next().ok_or(SynthesisError::Unsatisfiable)
+    }
+
+    /// Squeeze one mask field element natively from the preimage bytes.
+    ///
+    /// `domain`, `shared_point`, and `transcript` are absorbed as one contiguous
+    /// byte stream, matching the bytes the gadget absorbs.
+    #[must_use]
+    pub fn poseidon_hash_native(
+        domain: &[u8],
+        shared_point: &[u8],
+        transcript: &[u8],
+    ) -> ark_vesta::Fq {
+        let mut message = Vec::with_capacity(domain.len() + shared_point.len() + transcript.len());
+        message.extend_from_slice(domain);
+        message.extend_from_slice(shared_point);
+        message.extend_from_slice(transcript);
+        let mut sponge = PoseidonSponge::<ark_vesta::Fq>::new(poseidon_mask_config());
+        sponge.absorb(&message.as_slice());
+        sponge.squeeze_field_elements(1)[0]
+    }
+
+    /// Derive the Poseidon mask scalar from a shared helper-curve point and the
+    /// mask transcript.
+    ///
+    /// This is the native counterpart to the in-circuit Poseidon mask relation
+    /// and matches the mask value enforced by [`crate::MaskHashKind::Poseidon`].
+    /// It is exposed so benchmark harnesses can build a valid Poseidon witness
+    /// without re-deriving the sponge parameters or domain separator.
+    #[must_use]
+    pub fn poseidon_mask_from_shared(
+        shared_point: golden_pallas::VestaPoint,
+        transcript: &[u8],
+    ) -> golden_pallas::PallasScalar {
+        let field = poseidon_hash_native(
+            golden_pallas::domains::MASK_TO_FIELD,
+            &shared_point.to_bytes(),
+            transcript,
+        );
+        super::ark_fq_to_pallas_scalar(field)
+    }
+}
 
 const BACKEND: &str = "golden-pallas-proof-skeleton/v7";
 const CHALLENGE_DOMAIN: &[u8] = b"GoldenRedPallas/PallasProofChallenge/v0";
@@ -135,20 +261,42 @@ pub struct PallasMaskHashTrace {
 impl PallasMaskHashTrace {
     /// Build the deterministic trace from private mask witness material.
     #[must_use]
-    pub fn from_witness(public_inputs: &ProofPublicInputs, witness: &ProofWitness) -> Self {
+    pub fn from_witness(
+        public_inputs: &ProofPublicInputs,
+        witness: &ProofWitness,
+        hash_kind: MaskHashKind,
+    ) -> Self {
         let transcript = public_inputs.mask_transcript();
         let transcript_digest = trace_transcript_digest(&transcript);
         let mut mask_digest = [0_u8; 64];
         let shared_point = witness.shared_point.to_bytes();
-        let hash = Params::new()
-            .hash_length(64)
-            .to_state()
-            .update(domains::MASK_TO_FIELD)
-            .update(&shared_point)
-            .update(&transcript)
-            .finalize();
-        mask_digest.copy_from_slice(hash.as_bytes());
-        let mask = PallasScalar::from_uniform_bytes(&mask_digest);
+        let mask = match hash_kind {
+            MaskHashKind::Blake2b => {
+                let hash = Params::new()
+                    .hash_length(64)
+                    .to_state()
+                    .update(domains::MASK_TO_FIELD)
+                    .update(&shared_point)
+                    .update(&transcript)
+                    .finalize();
+                mask_digest.copy_from_slice(hash.as_bytes());
+                PallasScalar::from_uniform_bytes(&mask_digest)
+            }
+            #[cfg(feature = "poseidon-mask")]
+            MaskHashKind::Poseidon => {
+                let field = poseidon::poseidon_hash_native(
+                    domains::MASK_TO_FIELD,
+                    &shared_point,
+                    &transcript,
+                );
+                // Store the squeezed field element in the low 32 bytes of the
+                // 64-byte digest slot (high bytes zero) so the existing trace
+                // layout is preserved for the Poseidon arm.
+                let mask = ark_fq_to_pallas_scalar(field);
+                mask_digest[..32].copy_from_slice(&mask.to_bytes());
+                mask
+            }
+        };
 
         Self {
             shared_point,
@@ -159,8 +307,12 @@ impl PallasMaskHashTrace {
     }
 
     /// Validate this trace against the public inputs.
-    pub fn verify(self, public_inputs: &ProofPublicInputs) -> Result<PallasScalar, ProofError> {
-        PallasMaskHashFieldConstraintTrace::from_trace(self).verify(public_inputs)
+    pub fn verify(
+        self,
+        public_inputs: &ProofPublicInputs,
+        hash_kind: MaskHashKind,
+    ) -> Result<PallasScalar, ProofError> {
+        PallasMaskHashFieldConstraintTrace::from_trace(self).verify(public_inputs, hash_kind)
     }
 }
 
@@ -197,7 +349,11 @@ impl PallasMaskHashConstraintTrace {
 
     /// Validate limb lengths, byte ranges, canonical mask encoding, and trace
     /// consistency against public inputs.
-    pub fn verify(&self, public_inputs: &ProofPublicInputs) -> Result<PallasScalar, ProofError> {
+    pub fn verify(
+        &self,
+        public_inputs: &ProofPublicInputs,
+        hash_kind: MaskHashKind,
+    ) -> Result<PallasScalar, ProofError> {
         let domain = limbs_to_vec(&self.domain_limbs)?;
         if domain.as_slice() != domains::MASK_TO_FIELD {
             return Err(ProofError::InvalidProof);
@@ -213,6 +369,7 @@ impl PallasMaskHashConstraintTrace {
             transcript_digest,
             mask_digest,
             mask_bytes,
+            hash_kind,
         )
     }
 }
@@ -250,7 +407,11 @@ impl PallasMaskHashFieldConstraintTrace {
 
     /// Validate field-limb lengths, byte ranges, canonical mask encoding, and
     /// trace consistency against public inputs.
-    pub fn verify(&self, public_inputs: &ProofPublicInputs) -> Result<PallasScalar, ProofError> {
+    pub fn verify(
+        &self,
+        public_inputs: &ProofPublicInputs,
+        hash_kind: MaskHashKind,
+    ) -> Result<PallasScalar, ProofError> {
         let domain = field_limbs_to_vec(&self.domain_limbs)?;
         if domain.as_slice() != domains::MASK_TO_FIELD {
             return Err(ProofError::InvalidProof);
@@ -262,6 +423,7 @@ impl PallasMaskHashFieldConstraintTrace {
             field_limbs_to_array::<32>(&self.transcript_digest_limbs)?,
             field_limbs_to_array::<64>(&self.mask_digest_limbs)?,
             field_limbs_to_array::<32>(&self.mask_limbs)?,
+            hash_kind,
         )
     }
 }
@@ -402,8 +564,9 @@ impl PallasMaskConstraints {
     pub fn verify_public_relation(
         public_inputs: &ProofPublicInputs,
         mask_trace: PallasMaskHashTrace,
+        hash_kind: MaskHashKind,
     ) -> Result<PallasScalar, ProofError> {
-        let mask = mask_trace.verify(public_inputs)?;
+        let mask = mask_trace.verify(public_inputs, hash_kind)?;
 
         if public_inputs.mask_commitment != PallasPoint::generator_mul(mask) {
             return Err(ProofError::InvalidProof);
@@ -493,8 +656,9 @@ impl PallasProofSkeleton {
     /// witness, derive generators, or produce a proof.
     pub fn circuit_profile(
         public_inputs: &ProofPublicInputs,
+        hash_kind: MaskHashKind,
     ) -> Result<PallasProofCircuitProfile, ProofError> {
-        let mask_hash = synthesize_mask_hash_r1cs(public_inputs, None)?;
+        let mask_hash = synthesize_mask_hash_r1cs(public_inputs, None, hash_kind)?;
         let mask_circuit = mask_hash
             .r1cs
             .to_circuit(&[
@@ -517,32 +681,37 @@ impl PallasProofSkeleton {
 }
 
 impl ProofSystem for PallasProofSkeleton {
-    fn prove(
+    fn prove_with_hash(
         public_inputs: &ProofPublicInputs,
         witness: &ProofWitness,
+        hash_kind: MaskHashKind,
     ) -> Result<MaskProof, ProofError> {
-        validate_witness(public_inputs, witness)?;
+        validate_witness_with_hash(public_inputs, witness, hash_kind)?;
         let dh_trace = PallasVestaDhFieldConstraintTrace::from_witness(public_inputs, witness);
         dh_trace
             .verify(public_inputs)
             .map_err(|_| ProofError::InvalidWitness)?;
-        let mask_trace = PallasMaskHashTrace::from_witness(public_inputs, witness);
-        PallasMaskConstraints::verify_public_relation(public_inputs, mask_trace)
+        let mask_trace = PallasMaskHashTrace::from_witness(public_inputs, witness, hash_kind);
+        PallasMaskConstraints::verify_public_relation(public_inputs, mask_trace, hash_kind)
             .map_err(|_| ProofError::InvalidWitness)?;
         Ok(MaskProof {
             backend: BACKEND,
-            bytes: encode_skeleton_proof(public_inputs, witness)?,
+            bytes: encode_skeleton_proof(public_inputs, witness, hash_kind)?,
         })
     }
 
-    fn verify(public_inputs: &ProofPublicInputs, proof: &MaskProof) -> Result<(), ProofError> {
+    fn verify_with_hash(
+        public_inputs: &ProofPublicInputs,
+        proof: &MaskProof,
+        hash_kind: MaskHashKind,
+    ) -> Result<(), ProofError> {
         if proof.backend != BACKEND {
             return Err(ProofError::BackendMismatch);
         }
 
         let decoded = decode_skeleton_proof(&proof.bytes)?;
         let (mask_setup, mask_circuit, mask_claim) =
-            mask_circuit_claim(public_inputs, decoded.shared_commitments)?;
+            mask_circuit_claim(public_inputs, decoded.shared_commitments, hash_kind)?;
         decoded
             .mask_circuit_proof
             .verify(&mask_setup, &mask_circuit, &mask_claim)?;
@@ -617,15 +786,17 @@ impl SharedPointOpening {
 fn encode_skeleton_proof(
     public_inputs: &ProofPublicInputs,
     witness: &ProofWitness,
+    hash_kind: MaskHashKind,
 ) -> Result<Vec<u8>, ProofError> {
     let mut rng = OsRng;
-    encode_skeleton_proof_with_rng(&mut rng, public_inputs, witness)
+    encode_skeleton_proof_with_rng(&mut rng, public_inputs, witness, hash_kind)
 }
 
 fn encode_skeleton_proof_with_rng<R: RngCore + CryptoRng>(
     rng: &mut R,
     public_inputs: &ProofPublicInputs,
     witness: &ProofWitness,
+    hash_kind: MaskHashKind,
 ) -> Result<Vec<u8>, ProofError> {
     let shared_opening = SharedPointOpening::from_witness(
         witness,
@@ -634,7 +805,7 @@ fn encode_skeleton_proof_with_rng<R: RngCore + CryptoRng>(
     )?;
 
     let (mask_setup, mask_circuit, mask_claim, mask_witness) =
-        mask_circuit_witness(public_inputs, witness, shared_opening)?;
+        mask_circuit_witness(public_inputs, witness, shared_opening, hash_kind)?;
     let shared_commitments = shared_opening.commitments(&mask_setup);
     let mask_circuit_proof =
         PallasCircuitProof::prove(rng, &mask_setup, &mask_circuit, &mask_claim, &mask_witness)?;
@@ -714,8 +885,9 @@ fn read_array<const N: usize>(bytes: &[u8], offset: &mut usize) -> Result<[u8; N
 fn mask_circuit_claim(
     public_inputs: &ProofPublicInputs,
     shared_commitments: SharedPointCommitments,
+    hash_kind: MaskHashKind,
 ) -> Result<(PallasCircuitSetup, PallasCircuit, PallasCircuitClaim), ProofError> {
-    let mask_hash = synthesize_mask_hash_r1cs(public_inputs, None)?;
+    let mask_hash = synthesize_mask_hash_r1cs(public_inputs, None, hash_kind)?;
     let circuit = mask_hash
         .r1cs
         .to_circuit(&[
@@ -739,6 +911,7 @@ fn mask_circuit_witness(
     public_inputs: &ProofPublicInputs,
     witness: &ProofWitness,
     shared_opening: SharedPointOpening,
+    hash_kind: MaskHashKind,
 ) -> Result<
     (
         PallasCircuitSetup,
@@ -748,8 +921,14 @@ fn mask_circuit_witness(
     ),
     ProofError,
 > {
-    let mask_trace = PallasMaskHashTrace::from_witness(public_inputs, witness);
-    mask_circuit_witness_from_trace_with_opening(public_inputs, witness, mask_trace, shared_opening)
+    let mask_trace = PallasMaskHashTrace::from_witness(public_inputs, witness, hash_kind);
+    mask_circuit_witness_from_trace_with_opening(
+        public_inputs,
+        witness,
+        mask_trace,
+        shared_opening,
+        hash_kind,
+    )
 }
 
 #[cfg(test)]
@@ -757,6 +936,7 @@ fn mask_circuit_witness_from_trace(
     public_inputs: &ProofPublicInputs,
     witness: &ProofWitness,
     mask_trace: PallasMaskHashTrace,
+    hash_kind: MaskHashKind,
 ) -> Result<
     (
         PallasCircuitSetup,
@@ -769,7 +949,13 @@ fn mask_circuit_witness_from_trace(
     let shared_opening =
         SharedPointOpening::from_witness(witness, PallasScalar::ZERO, PallasScalar::ZERO)
             .expect("test witness shared point is affine");
-    mask_circuit_witness_from_trace_with_opening(public_inputs, witness, mask_trace, shared_opening)
+    mask_circuit_witness_from_trace_with_opening(
+        public_inputs,
+        witness,
+        mask_trace,
+        shared_opening,
+        hash_kind,
+    )
 }
 
 fn mask_circuit_witness_from_trace_with_opening(
@@ -777,6 +963,7 @@ fn mask_circuit_witness_from_trace_with_opening(
     _witness: &ProofWitness,
     mask_trace: PallasMaskHashTrace,
     shared_opening: SharedPointOpening,
+    hash_kind: MaskHashKind,
 ) -> Result<
     (
         PallasCircuitSetup,
@@ -793,6 +980,7 @@ fn mask_circuit_witness_from_trace_with_opening(
             shared_x: shared_opening.x,
             shared_y: shared_opening.y,
         }),
+        hash_kind,
     )?;
     let full_witness = mask_hash.full_witness.ok_or(ProofError::InvalidWitness)?;
     let committed_indices = [
@@ -844,6 +1032,7 @@ struct MaskHashAssignment {
 fn synthesize_mask_hash_r1cs(
     public_inputs: &ProofPublicInputs,
     assignment: Option<MaskHashAssignment>,
+    hash_kind: MaskHashKind,
 ) -> Result<MaskHashR1cs, ProofError> {
     let cs = ConstraintSystem::<ark_vesta::Fq>::new_ref();
     cs.set_optimization_goal(OptimizationGoal::Constraints);
@@ -893,8 +1082,21 @@ fn synthesize_mask_hash_r1cs(
     let mut message = UInt8::constant_vec(domains::MASK_TO_FIELD);
     message.extend(shared_point_bytes);
     message.extend(UInt8::constant_vec(&public_inputs.mask_transcript()));
-    let digest = blake2b_512_circuit(&message).map_err(|_| ProofError::InvalidWitness)?;
-    enforce_digest_reduces_to_mask(&digest, &mask_var).map_err(|_| ProofError::InvalidWitness)?;
+    match hash_kind {
+        MaskHashKind::Blake2b => {
+            let digest = blake2b_512_circuit(&message).map_err(|_| ProofError::InvalidWitness)?;
+            enforce_digest_reduces_to_mask(&digest, &mask_var)
+                .map_err(|_| ProofError::InvalidWitness)?;
+        }
+        #[cfg(feature = "poseidon-mask")]
+        MaskHashKind::Poseidon => {
+            let squeezed = poseidon::poseidon_hash_circuit(cs.clone(), &message)
+                .map_err(|_| ProofError::InvalidWitness)?;
+            squeezed
+                .enforce_equal(&mask_var)
+                .map_err(|_| ProofError::InvalidWitness)?;
+        }
+    }
 
     cs.finalize();
     if assignment.is_some() && !cs.is_satisfied().map_err(|_| ProofError::InvalidWitness)? {
@@ -1316,7 +1518,7 @@ fn vesta_scalar_to_ark_fr(scalar: VestaScalar) -> ark_vesta::Fr {
     ark_vesta::Fr::from_le_bytes_mod_order(&scalar.to_bytes())
 }
 
-fn ark_fq_to_pallas_scalar(field: ark_vesta::Fq) -> PallasScalar {
+pub(crate) fn ark_fq_to_pallas_scalar(field: ark_vesta::Fq) -> PallasScalar {
     let mut bytes = field.into_bigint().to_bytes_le();
     bytes.resize(32, 0);
     PallasScalar::from_bytes(bytes.try_into().expect("resized field bytes are 32 bytes"))
@@ -1427,6 +1629,7 @@ fn verify_mask_hash_bytes(
     transcript_digest: [u8; 32],
     mask_digest: [u8; 64],
     mask_bytes: [u8; 32],
+    hash_kind: MaskHashKind,
 ) -> Result<PallasScalar, ProofError> {
     let mask = PallasScalar::from_bytes(mask_bytes).ok_or(ProofError::InvalidProof)?;
     let transcript = public_inputs.mask_transcript();
@@ -1434,25 +1637,47 @@ fn verify_mask_hash_bytes(
         return Err(ProofError::InvalidProof);
     }
 
-    let mut expected_digest = [0_u8; 64];
-    let hash = Params::new()
-        .hash_length(64)
-        .to_state()
-        .update(domains::MASK_TO_FIELD)
-        .update(&shared_point)
-        .update(&transcript)
-        .finalize();
-    expected_digest.copy_from_slice(hash.as_bytes());
-    if mask_digest != expected_digest {
-        return Err(ProofError::InvalidProof);
-    }
+    match hash_kind {
+        MaskHashKind::Blake2b => {
+            let mut expected_digest = [0_u8; 64];
+            let hash = Params::new()
+                .hash_length(64)
+                .to_state()
+                .update(domains::MASK_TO_FIELD)
+                .update(&shared_point)
+                .update(&transcript)
+                .finalize();
+            expected_digest.copy_from_slice(hash.as_bytes());
+            if mask_digest != expected_digest {
+                return Err(ProofError::InvalidProof);
+            }
 
-    let reduced_mask = PallasScalar::from_uniform_bytes(&mask_digest);
-    if mask != reduced_mask {
-        return Err(ProofError::InvalidProof);
-    }
+            let reduced_mask = PallasScalar::from_uniform_bytes(&mask_digest);
+            if mask != reduced_mask {
+                return Err(ProofError::InvalidProof);
+            }
 
-    Ok(reduced_mask)
+            Ok(reduced_mask)
+        }
+        #[cfg(feature = "poseidon-mask")]
+        MaskHashKind::Poseidon => {
+            // Poseidon outputs a field element directly. Recompute it and
+            // compare field values; the mask_digest slot holds the field bytes
+            // in its low 32 bytes (high 32 zero).
+            let field =
+                poseidon::poseidon_hash_native(domains::MASK_TO_FIELD, &shared_point, &transcript);
+            let expected_mask = ark_fq_to_pallas_scalar(field);
+            if mask != expected_mask {
+                return Err(ProofError::InvalidProof);
+            }
+            let mut expected_digest = [0_u8; 64];
+            expected_digest[..32].copy_from_slice(&expected_mask.to_bytes());
+            if mask_digest != expected_digest {
+                return Err(ProofError::InvalidProof);
+            }
+            Ok(expected_mask)
+        }
+    }
 }
 
 fn verify_vesta_dh_bytes(
@@ -1515,7 +1740,8 @@ mod tests {
         vesta_dh_circuit_claim, vesta_dh_circuit_witness,
     };
     use crate::{
-        MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
+        MaskHashKind, MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem,
+        ProofWitness,
     };
 
     fn id(value: u64) -> ParticipantId {
@@ -1592,9 +1818,9 @@ mod tests {
         };
 
         let (first_mask_setup, first_mask_circuit, _) =
-            mask_circuit_claim(&first_inputs, shared_commitments).expect("first mask claim");
+            mask_circuit_claim(&first_inputs, shared_commitments, MaskHashKind::default()).expect("first mask claim");
         let (second_mask_setup, second_mask_circuit, _) =
-            mask_circuit_claim(&second_inputs, shared_commitments).expect("second mask claim");
+            mask_circuit_claim(&second_inputs, shared_commitments, MaskHashKind::default()).expect("second mask claim");
         assert_eq!(
             first_mask_circuit.internal_vars(),
             second_mask_circuit.internal_vars()
@@ -1615,7 +1841,7 @@ mod tests {
     #[test]
     fn backend_reports_circuit_profile_for_audit_artifacts() {
         let (public_inputs, _) = valid_case();
-        let profile = PallasProofSkeleton::circuit_profile(&public_inputs).expect("profile");
+        let profile = PallasProofSkeleton::circuit_profile(&public_inputs, MaskHashKind::default()).expect("profile");
 
         assert_eq!(profile.mask.committed_vars, 3);
         assert_eq!(profile.vesta_dh.committed_vars, 2);
@@ -1731,10 +1957,10 @@ mod tests {
     #[test]
     fn mask_constraints_accept_valid_public_relation() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
 
         assert_eq!(
-            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace),
+            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace, MaskHashKind::default()),
             Ok(witness.mask)
         );
     }
@@ -1742,29 +1968,29 @@ mod tests {
     #[test]
     fn mask_hash_trace_accepts_valid_trace() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
 
-        assert_eq!(mask_trace.verify(&public_inputs), Ok(witness.mask));
+        assert_eq!(mask_trace.verify(&public_inputs, MaskHashKind::default()), Ok(witness.mask));
     }
 
     #[test]
     fn mask_hash_constraint_trace_accepts_valid_limbs() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
 
-        assert_eq!(constraint_trace.verify(&public_inputs), Ok(witness.mask));
+        assert_eq!(constraint_trace.verify(&public_inputs, MaskHashKind::default()), Ok(witness.mask));
     }
 
     #[test]
     fn mask_hash_constraint_trace_rejects_malformed_limb_length() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
         constraint_trace.mask_digest_limbs.pop();
 
         assert_eq!(
-            constraint_trace.verify(&public_inputs),
+            constraint_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1772,12 +1998,12 @@ mod tests {
     #[test]
     fn mask_hash_constraint_trace_rejects_out_of_range_limb() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
         constraint_trace.mask_digest_limbs[0] = 256;
 
         assert_eq!(
-            constraint_trace.verify(&public_inputs),
+            constraint_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1785,12 +2011,12 @@ mod tests {
     #[test]
     fn mask_hash_constraint_trace_rejects_non_canonical_mask_encoding() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
         constraint_trace.mask_limbs = vec![255; 32];
 
         assert_eq!(
-            constraint_trace.verify(&public_inputs),
+            constraint_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1798,12 +2024,12 @@ mod tests {
     #[test]
     fn mask_hash_constraint_trace_rejects_altered_digest_limb() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let mut constraint_trace = PallasMaskHashConstraintTrace::from_trace(mask_trace);
         constraint_trace.mask_digest_limbs[0] ^= 1;
 
         assert_eq!(
-            constraint_trace.verify(&public_inputs),
+            constraint_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1811,21 +2037,21 @@ mod tests {
     #[test]
     fn mask_hash_field_constraint_trace_accepts_valid_limbs() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let constraint_trace = PallasMaskHashFieldConstraintTrace::from_trace(mask_trace);
 
-        assert_eq!(constraint_trace.verify(&public_inputs), Ok(witness.mask));
+        assert_eq!(constraint_trace.verify(&public_inputs, MaskHashKind::default()), Ok(witness.mask));
     }
 
     #[test]
     fn mask_hash_field_constraint_trace_rejects_out_of_range_limb() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let mut constraint_trace = PallasMaskHashFieldConstraintTrace::from_trace(mask_trace);
         constraint_trace.mask_digest_limbs[0] = PallasScalar::from_u64(256);
 
         assert_eq!(
-            constraint_trace.verify(&public_inputs),
+            constraint_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1926,11 +2152,11 @@ mod tests {
     #[test]
     fn mask_hash_trace_rejects_wrong_shared_point() {
         let (public_inputs, witness) = valid_case();
-        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         mask_trace.shared_point[0] ^= 1;
 
         assert_eq!(
-            mask_trace.verify(&public_inputs),
+            mask_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1938,11 +2164,11 @@ mod tests {
     #[test]
     fn mask_hash_trace_rejects_wrong_transcript_digest() {
         let (public_inputs, witness) = valid_case();
-        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         mask_trace.transcript_digest[0] ^= 1;
 
         assert_eq!(
-            mask_trace.verify(&public_inputs),
+            mask_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1950,11 +2176,11 @@ mod tests {
     #[test]
     fn mask_hash_trace_rejects_wrong_mask_digest() {
         let (public_inputs, witness) = valid_case();
-        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         mask_trace.mask_digest[0] ^= 1;
 
         assert_eq!(
-            mask_trace.verify(&public_inputs),
+            mask_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1962,11 +2188,11 @@ mod tests {
     #[test]
     fn mask_hash_trace_rejects_wrong_mask() {
         let (public_inputs, witness) = valid_case();
-        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         mask_trace.mask += PallasScalar::ONE;
 
         assert_eq!(
-            mask_trace.verify(&public_inputs),
+            mask_trace.verify(&public_inputs, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1974,11 +2200,11 @@ mod tests {
     #[test]
     fn mask_constraints_reject_wrong_trace_mask() {
         let (public_inputs, witness) = valid_case();
-        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         mask_trace.mask += PallasScalar::ONE;
 
         assert_eq!(
-            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace),
+            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -1987,10 +2213,10 @@ mod tests {
     fn mask_constraints_reject_wrong_public_mask_commitment() {
         let (mut public_inputs, witness) = valid_case();
         public_inputs.mask_commitment += PallasPoint::generator();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
 
         assert_eq!(
-            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace),
+            PallasMaskConstraints::verify_public_relation(&public_inputs, mask_trace, MaskHashKind::default()),
             Err(ProofError::InvalidProof)
         );
     }
@@ -2008,9 +2234,9 @@ mod tests {
     #[test]
     fn mask_circuit_enforces_hash_digest_reduction_to_mask() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let (_, circuit, claim, circuit_witness) =
-            mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace)
+            mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace, MaskHashKind::default())
                 .expect("valid mask circuit witness");
 
         assert_eq!(circuit.committed_vars(), MASK_CIRCUIT_COMMITTED_VARS);
@@ -2022,20 +2248,20 @@ mod tests {
         let mut tampered_trace = mask_trace;
         tampered_trace.mask += PallasScalar::ONE;
 
-        assert!(mask_circuit_witness_from_trace(&public_inputs, &witness, tampered_trace).is_err());
+        assert!(mask_circuit_witness_from_trace(&public_inputs, &witness, tampered_trace, MaskHashKind::default()).is_err());
     }
 
     #[test]
     fn mask_circuit_enforces_blake2b_digest_generation() {
         let (mut public_inputs, mut witness) = valid_case();
-        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mut mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         mask_trace.mask_digest[0] ^= 1;
         let wrong_mask = PallasScalar::from_uniform_bytes(&mask_trace.mask_digest);
         mask_trace.mask = wrong_mask;
         witness.mask = wrong_mask;
         public_inputs.mask_commitment = PallasPoint::generator_mul(wrong_mask);
 
-        assert!(mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace).is_err());
+        assert!(mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace, MaskHashKind::default()).is_err());
     }
 
     #[test]
@@ -2044,7 +2270,7 @@ mod tests {
         let shared_opening =
             SharedPointOpening::from_witness(&witness, PallasScalar::ZERO, PallasScalar::ZERO)
                 .expect("affine shared point");
-        let (mask_setup, _, _, _) = mask_circuit_witness(&public_inputs, &witness, shared_opening)
+        let (mask_setup, _, _, _) = mask_circuit_witness(&public_inputs, &witness, shared_opening, MaskHashKind::default())
             .expect("valid mask circuit witness");
         let shared_commitments = shared_opening.commitments(&mask_setup);
         let (_, circuit, _, circuit_witness) =
@@ -2077,9 +2303,9 @@ mod tests {
     #[test]
     fn mask_circuit_enforces_shared_point_x_encoding_and_curve_equation() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let (_, circuit, _, circuit_witness) =
-            mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace)
+            mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace, MaskHashKind::default())
                 .expect("valid mask circuit witness");
 
         assert!(circuit_witness.is_satisfied(&circuit));
@@ -2088,16 +2314,16 @@ mod tests {
         wrong_witness.shared_point = VestaPoint::generator_mul(VestaScalar::from_u64(99));
 
         assert!(
-            mask_circuit_witness_from_trace(&public_inputs, &wrong_witness, mask_trace).is_err()
+            mask_circuit_witness_from_trace(&public_inputs, &wrong_witness, mask_trace, MaskHashKind::default()).is_err()
         );
     }
 
     #[test]
     fn mask_circuit_enforces_shared_point_compressed_sign_bit() {
         let (public_inputs, witness) = valid_case();
-        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness);
+        let mask_trace = PallasMaskHashTrace::from_witness(&public_inputs, &witness, MaskHashKind::default());
         let (_, circuit, _, circuit_witness) =
-            mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace)
+            mask_circuit_witness_from_trace(&public_inputs, &witness, mask_trace, MaskHashKind::default())
                 .expect("valid mask circuit witness");
 
         assert!(circuit_witness.is_satisfied(&circuit));
@@ -2106,7 +2332,7 @@ mod tests {
         wrong_sign_witness.shared_point = -witness.shared_point;
 
         assert!(
-            mask_circuit_witness_from_trace(&public_inputs, &wrong_sign_witness, mask_trace)
+            mask_circuit_witness_from_trace(&public_inputs, &wrong_sign_witness, mask_trace, MaskHashKind::default())
                 .is_err()
         );
     }
@@ -2131,10 +2357,20 @@ mod tests {
     )]
     fn skeleton_deterministic_rng_reproduces_proof_vector_bytes() {
         let (public_inputs, witness) = valid_case();
-        let first = encode_skeleton_proof_with_rng(&mut TestRng(7), &public_inputs, &witness)
-            .expect("first proof");
-        let second = encode_skeleton_proof_with_rng(&mut TestRng(7), &public_inputs, &witness)
-            .expect("second proof");
+        let first = encode_skeleton_proof_with_rng(
+            &mut TestRng(7),
+            &public_inputs,
+            &witness,
+            MaskHashKind::default(),
+        )
+        .expect("first proof");
+        let second = encode_skeleton_proof_with_rng(
+            &mut TestRng(7),
+            &public_inputs,
+            &witness,
+            MaskHashKind::default(),
+        )
+        .expect("second proof");
         let proof = MaskProof {
             backend: super::BACKEND,
             bytes: first.clone(),
@@ -2372,4 +2608,217 @@ mod tests {
             Err(ProofError::InvalidProof)
         );
     }
+}
+
+#[cfg(all(test, feature = "poseidon-mask"))]
+mod poseidon_tests {
+    use ark_ff::{BigInteger, PrimeField};
+    use ark_r1cs_std::{R1CSVar, alloc::AllocVar, uint8::UInt8};
+    use ark_relations::r1cs::ConstraintSystem;
+    use golden_core::{FieldElement, ParticipantId, Polynomial};
+    use golden_pallas::{
+        HelperSecretKey, PallasPoint, PallasScalar, SharedSecret, VestaScalar, commit_polynomial,
+        domains,
+    };
+
+    use super::{
+        ark_fq_to_pallas_scalar, decode_skeleton_proof,
+        poseidon::{poseidon_hash_circuit, poseidon_hash_native, poseidon_mask_config},
+    };
+    use crate::{
+        MaskHashKind, MaskProof, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
+        pallas::PallasProofSkeleton,
+    };
+
+    fn id(value: u64) -> ParticipantId {
+        ParticipantId::new(value).expect("non-zero id")
+    }
+
+    /// Build a fixed witness whose mask is derived via the Poseidon native path.
+    fn poseidon_case() -> (ProofPublicInputs, ProofWitness) {
+        let dealer_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(13));
+        let participant_secret = HelperSecretKey::from_scalar(VestaScalar::from_u64(29));
+        let public_polynomial = commit_polynomial(&Polynomial::new(vec![
+            PallasScalar::from_u64(5),
+            PallasScalar::from_u64(7),
+        ]));
+        let shared = dealer_secret.diffie_hellman(participant_secret.public_key());
+        let public_inputs = ProofPublicInputs {
+            session_id: b"poseidon-mask-session".to_vec(),
+            dealer_id: id(10),
+            participant_id: id(1),
+            dealer_public: dealer_secret.public_key(),
+            participant_public: participant_secret.public_key(),
+            mask_commitment: PallasPoint::identity(),
+            public_polynomial,
+        };
+        let transcript = public_inputs.mask_transcript();
+        let shared_point = shared.point();
+        let field =
+            poseidon_hash_native(domains::MASK_TO_FIELD, &shared_point.to_bytes(), &transcript);
+        let mask = ark_fq_to_pallas_scalar(field);
+        let public_inputs = ProofPublicInputs {
+            mask_commitment: PallasPoint::generator_mul(mask),
+            ..public_inputs
+        };
+        let witness = ProofWitness {
+            dealer_secret: dealer_secret.scalar(),
+            shared_point,
+            mask,
+        };
+        (public_inputs, witness)
+    }
+
+    fn poseidon_message(shared_point: &[u8], transcript: &[u8]) -> Vec<u8> {
+        let mut message = Vec::new();
+        message.extend_from_slice(domains::MASK_TO_FIELD);
+        message.extend_from_slice(shared_point);
+        message.extend_from_slice(transcript);
+        message
+    }
+
+    #[test]
+    fn poseidon_native_matches_circuit_digest() {
+        let (public_inputs, witness) = poseidon_case();
+        let transcript = public_inputs.mask_transcript();
+        let shared_point = witness.shared_point.to_bytes();
+
+        let native =
+            poseidon_hash_native(domains::MASK_TO_FIELD, &shared_point, &transcript);
+
+        let cs = ConstraintSystem::<ark_vesta::Fq>::new_ref();
+        let message_bytes = poseidon_message(&shared_point, &transcript);
+        let message: Vec<UInt8<ark_vesta::Fq>> = message_bytes
+            .iter()
+            .map(|byte| UInt8::new_witness(cs.clone(), || Ok(*byte)).expect("alloc byte"))
+            .collect();
+        let circuit = poseidon_hash_circuit(cs.clone(), &message).expect("circuit hash");
+
+        assert_eq!(circuit.value().expect("circuit value"), native);
+        assert!(cs.is_satisfied().expect("cs satisfied"));
+    }
+
+    fn to_hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(hex, "{byte:02x}").expect("writing to a String never fails");
+        }
+        hex
+    }
+
+    #[test]
+    fn poseidon_config_known_answer_vector() {
+        let config = poseidon_mask_config();
+        assert_eq!(config.full_rounds, 8);
+        assert_eq!(config.partial_rounds, 56);
+        assert_eq!(config.alpha, 5);
+        assert_eq!(config.rate, 2);
+        assert_eq!(config.capacity, 1);
+        assert_eq!(config.ark.len(), config.full_rounds + config.partial_rounds);
+        assert_eq!(config.ark.len(), 64);
+        assert_eq!(config.mds.len(), 3);
+        for row in &config.mds {
+            assert_eq!(row.len(), 3);
+        }
+
+        // Known-answer vector: hash a fixed pinned preimage and assert the
+        // squeezed field element serializes to a pinned little-endian hex string.
+        let shared_point = [7_u8; 32];
+        let transcript = [9_u8; 16];
+        let field = poseidon_hash_native(domains::MASK_TO_FIELD, &shared_point, &transcript);
+        let bytes = field.into_bigint().to_bytes_le();
+        let hex = to_hex(&bytes);
+        assert_eq!(hex, POSEIDON_MASK_KAT_HEX);
+    }
+
+    #[test]
+    fn poseidon_prove_verify_round_trip() {
+        let (public_inputs, witness) = poseidon_case();
+
+        let proof =
+            PallasProofSkeleton::prove_with_hash(&public_inputs, &witness, MaskHashKind::Poseidon)
+                .expect("poseidon proof");
+        assert_eq!(
+            PallasProofSkeleton::verify_with_hash(
+                &public_inputs,
+                &proof,
+                MaskHashKind::Poseidon
+            ),
+            Ok(())
+        );
+        assert!(decode_skeleton_proof(&proof.bytes).is_ok());
+
+        // Coexistence: the same inputs still round-trip under Blake2b after
+        // refreshing the mask to the Blake2b-derived value.
+        let blake_mask = golden_pallas::derive_mask(
+            SharedSecret::from_point(witness.shared_point),
+            &public_inputs.mask_transcript(),
+        );
+        let blake_inputs = ProofPublicInputs {
+            mask_commitment: PallasPoint::generator_mul(blake_mask),
+            ..public_inputs.clone()
+        };
+        let blake_witness = ProofWitness {
+            mask: blake_mask,
+            ..witness
+        };
+        let blake_proof =
+            PallasProofSkeleton::prove_with_hash(&blake_inputs, &blake_witness, MaskHashKind::Blake2b)
+                .expect("blake proof");
+        assert_eq!(
+            PallasProofSkeleton::verify_with_hash(
+                &blake_inputs,
+                &blake_proof,
+                MaskHashKind::Blake2b
+            ),
+            Ok(())
+        );
+
+        // Kind binding: a Poseidon proof verified as Blake2b is rejected.
+        assert!(
+            PallasProofSkeleton::verify_with_hash(
+                &public_inputs,
+                &proof,
+                MaskHashKind::Blake2b
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn poseidon_rejects_tampered_witness() {
+        let (public_inputs, mut witness) = poseidon_case();
+        witness.mask += PallasScalar::ONE;
+
+        assert_eq!(
+            PallasProofSkeleton::prove_with_hash(&public_inputs, &witness, MaskHashKind::Poseidon),
+            Err(ProofError::InvalidWitness)
+        );
+
+        // A valid Poseidon proof with a flipped byte must fail verification.
+        let (public_inputs, witness) = poseidon_case();
+        let mut proof =
+            PallasProofSkeleton::prove_with_hash(&public_inputs, &witness, MaskHashKind::Poseidon)
+                .expect("poseidon proof");
+        let last = proof.bytes.len() - 1;
+        proof.bytes[last] ^= 1;
+        assert!(
+            PallasProofSkeleton::verify_with_hash(
+                &public_inputs,
+                &proof,
+                MaskHashKind::Poseidon
+            )
+            .is_err()
+        );
+        let _ = MaskProof {
+            backend: super::BACKEND,
+            bytes: Vec::new(),
+        };
+    }
+
+    /// Pinned little-endian hex of the squeezed mask field element for the
+    /// fixed known-answer preimage. Regenerated once, then locked here.
+    const POSEIDON_MASK_KAT_HEX: &str =
+        "bbd0d35cd8c8ffcce52538b01d6666ef3775fc5e8d405b20375e570355e90717";
 }

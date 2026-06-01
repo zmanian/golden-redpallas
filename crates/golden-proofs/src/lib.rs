@@ -27,6 +27,9 @@ pub use pallas::{
     PallasR1cs, PallasSparseMatrix, PallasVestaDhConstraintTrace,
     PallasVestaDhFieldConstraintTrace, derive_pallas_generator,
 };
+#[cfg(feature = "poseidon-mask")]
+pub use pallas::poseidon::poseidon_mask_from_shared;
 pub use types::{
-    MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem, ProofWitness,
+    MaskHashKind, MaskProof, ProofBatchItem, ProofError, ProofPublicInputs, ProofSystem,
+    ProofWitness,
 };
